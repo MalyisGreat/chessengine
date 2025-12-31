@@ -13,7 +13,7 @@ class ModelConfig:
     """Neural network architecture configuration"""
     num_blocks: int = 10          # Number of residual blocks
     num_filters: int = 256        # Filters per conv layer
-    input_planes: int = 12        # Input feature planes (6 white + 6 black pieces)
+    input_planes: int = 18        # 12 pieces + side to move + 4 castling + en passant
     policy_output_size: int = 1858  # All possible moves (from-to + promotions)
     se_ratio: int = 8             # Squeeze-excitation ratio
 

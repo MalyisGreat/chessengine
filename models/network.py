@@ -2,7 +2,7 @@
 Chess Neural Network - ResNet architecture with policy and value heads
 
 Based on AlphaZero architecture:
-- Input: 12 planes of 8x8 (6 white pieces + 6 black pieces)
+- Input: 18 planes of 8x8 (12 pieces + side to move + castling + en passant)
 - Body: Stack of residual blocks
 - Policy head: Move probabilities
 - Value head: Position evaluation
@@ -140,7 +140,7 @@ class ChessNetwork(nn.Module):
         self,
         num_blocks: int = 10,
         num_filters: int = 256,
-        input_planes: int = 12,
+        input_planes: int = 18,
         num_moves: int = 1858,
         se_ratio: int = 8,
     ):
@@ -148,7 +148,7 @@ class ChessNetwork(nn.Module):
         Args:
             num_blocks: Number of residual blocks
             num_filters: Filters per convolution layer
-            input_planes: Input feature planes (12 = 6 white + 6 black pieces)
+            input_planes: Input feature planes (18 = 12 pieces + 6 game state)
             num_moves: Number of possible moves
             se_ratio: Squeeze-excitation ratio (0 to disable)
         """
@@ -342,7 +342,7 @@ if __name__ == "__main__":
 
     # Test forward pass
     batch_size = 4
-    x = torch.randn(batch_size, 12, 8, 8)
+    x = torch.randn(batch_size, 18, 8, 8)
 
     policy, value = model(x)
     print(f"Policy shape: {policy.shape}")  # (4, 1858)

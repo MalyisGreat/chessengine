@@ -71,9 +71,20 @@ def download_lichess_evaluations(
     print(f"Downloaded {len(ds):,} positions\n")
 
     def fen_to_tensor(fen: str) -> np.ndarray:
-        """Convert FEN string to 12x8x8 tensor"""
+        """Convert FEN string to 18x8x8 tensor
+
+        Planes:
+        0-5: White pieces (P, N, B, R, Q, K)
+        6-11: Black pieces (p, n, b, r, q, k)
+        12: Side to move (all 1s if white to move)
+        13: White kingside castling
+        14: White queenside castling
+        15: Black kingside castling
+        16: Black queenside castling
+        17: En passant square
+        """
         board = chess.Board(fen)
-        tensor = np.zeros((12, 8, 8), dtype=np.float32)
+        tensor = np.zeros((18, 8, 8), dtype=np.float32)
 
         piece_to_plane = {
             (chess.PAWN, chess.WHITE): 0,
@@ -90,6 +101,7 @@ def download_lichess_evaluations(
             (chess.KING, chess.BLACK): 11,
         }
 
+        # Piece positions (planes 0-11)
         for sq in chess.SQUARES:
             piece = board.piece_at(sq)
             if piece:
@@ -97,6 +109,26 @@ def download_lichess_evaluations(
                 rank = sq // 8
                 file = sq % 8
                 tensor[plane, rank, file] = 1.0
+
+        # Side to move (plane 12)
+        if board.turn == chess.WHITE:
+            tensor[12, :, :] = 1.0
+
+        # Castling rights (planes 13-16)
+        if board.has_kingside_castling_rights(chess.WHITE):
+            tensor[13, :, :] = 1.0
+        if board.has_queenside_castling_rights(chess.WHITE):
+            tensor[14, :, :] = 1.0
+        if board.has_kingside_castling_rights(chess.BLACK):
+            tensor[15, :, :] = 1.0
+        if board.has_queenside_castling_rights(chess.BLACK):
+            tensor[16, :, :] = 1.0
+
+        # En passant square (plane 17)
+        if board.ep_square is not None:
+            ep_rank = board.ep_square // 8
+            ep_file = board.ep_square % 8
+            tensor[17, ep_rank, ep_file] = 1.0
 
         return tensor
 

@@ -47,7 +47,11 @@ Uses [Lichess Position Evaluations](https://huggingface.co/datasets/Lichess/ches
 ## Architecture
 
 ```
-Input: 12 planes x 8x8 (6 white pieces + 6 black pieces)
+Input: 18 planes x 8x8
+  - 12 piece planes (6 white + 6 black)
+  - 1 side to move
+  - 4 castling rights
+  - 1 en passant square
     ↓
 Conv 3x3, 256 filters
     ↓
