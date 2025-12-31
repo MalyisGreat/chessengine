@@ -120,31 +120,32 @@ def download_lichess_evaluations(
 
     # Download from Hugging Face
     print("Connecting to Hugging Face...")
-    split = f"train[:{num_positions}]"
 
-    print(f"Downloading {num_positions:,} positions using streaming mode (FAST!)...")
+    # Try non-streaming first (uses cached data if available - MUCH faster!)
+    try:
+        print(f"Loading {num_positions:,} positions from cache (fast!)...")
+        ds = load_dataset(
+            "Lichess/chess-position-evaluations",
+            split=f"train[:{num_positions}]",
+            streaming=False,  # Use cached parquet files
+        )
+        use_streaming = False
+        print(f"Loaded {len(ds):,} positions from cache\n")
+    except Exception as e:
+        # Fall back to streaming if cache not available
+        print(f"Cache not available, using streaming mode...")
+        ds = load_dataset(
+            "Lichess/chess-position-evaluations",
+            split="train",
+            streaming=True,
+        )
+        ds = ds.take(num_positions)
+        use_streaming = True
+        print(f"Streaming {num_positions:,} positions...\n")
 
-    # Use streaming to avoid loading entire 784M dataset
-    ds = load_dataset(
-        "Lichess/chess-position-evaluations",
-        split="train",
-        streaming=True,
-    )
-
-    # Take only what we need
-    ds = ds.take(num_positions)
-    print(f"Streaming {num_positions:,} positions...\n")
-
-    num_workers = cpu_count()
+    # Limit workers to avoid memory issues (252 is overkill)
+    num_workers = min(cpu_count(), 64)
     print(f"Converting to training format using {num_workers} CPU cores...")
-
-    # Process streaming dataset in batches with multiprocessing
-    boards = []
-    values = []
-    chunk_idx = 0
-    pending_batch = []
-
-    pbar = tqdm(total=num_positions, desc="Processing positions")
 
     def save_chunk(boards_list, values_list, idx):
         """Save a chunk of data"""
@@ -154,37 +155,81 @@ def download_lichess_evaluations(
         chunk_path = os.path.join(output_dir, f"chunk_{idx:06d}.npz")
         np.savez_compressed(chunk_path, boards=boards_arr, policies=policies, values=values_arr)
 
-    with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        for example in ds:
-            pending_batch.append((example['fen'], example.get('cp'), example.get('mate')))
+    boards = []
+    values = []
+    chunk_idx = 0
 
-            # Process in larger batches for efficiency
-            if len(pending_batch) >= 10000:
-                results = list(executor.map(_process_example, pending_batch, chunksize=500))
+    if not use_streaming:
+        # FAST PATH: Use cached dataset with batch processing
+        total = len(ds)
+        process_batch_size = 50000  # Larger batches for cached data
+
+        pbar = tqdm(total=total, desc="Processing positions")
+
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            for start in range(0, total, process_batch_size):
+                end = min(start + process_batch_size, total)
+                batch = ds[start:end]
+
+                # Prepare batch for parallel processing
+                args_list = [
+                    (batch['fen'][i], batch.get('cp', [None]*len(batch['fen']))[i] if 'cp' in batch else None,
+                     batch.get('mate', [None]*len(batch['fen']))[i] if 'mate' in batch else None)
+                    for i in range(len(batch['fen']))
+                ]
+
+                # Process in parallel
+                results = list(executor.map(_process_example, args_list, chunksize=1000))
+
                 for result in results:
                     if result is not None:
                         boards.append(result[0])
                         values.append(result[1])
-                pbar.update(len(pending_batch))
-                pending_batch = []
 
-                # Save chunk when batch is full
+                pbar.update(end - start)
+
+                # Save chunks as we go
                 while len(boards) >= batch_size:
                     save_chunk(boards[:batch_size], values[:batch_size], chunk_idx)
                     boards = boards[batch_size:]
                     values = values[batch_size:]
                     chunk_idx += 1
 
-        # Process remaining batch
-        if pending_batch:
-            results = list(executor.map(_process_example, pending_batch, chunksize=500))
-            for result in results:
-                if result is not None:
-                    boards.append(result[0])
-                    values.append(result[1])
-            pbar.update(len(pending_batch))
+        pbar.close()
 
-    pbar.close()
+    else:
+        # SLOW PATH: Streaming mode (network bound)
+        pbar = tqdm(total=num_positions, desc="Processing positions (streaming)")
+        pending_batch = []
+
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            for example in ds:
+                pending_batch.append((example['fen'], example.get('cp'), example.get('mate')))
+
+                if len(pending_batch) >= 10000:
+                    results = list(executor.map(_process_example, pending_batch, chunksize=500))
+                    for result in results:
+                        if result is not None:
+                            boards.append(result[0])
+                            values.append(result[1])
+                    pbar.update(len(pending_batch))
+                    pending_batch = []
+
+                    while len(boards) >= batch_size:
+                        save_chunk(boards[:batch_size], values[:batch_size], chunk_idx)
+                        boards = boards[batch_size:]
+                        values = values[batch_size:]
+                        chunk_idx += 1
+
+            if pending_batch:
+                results = list(executor.map(_process_example, pending_batch, chunksize=500))
+                for result in results:
+                    if result is not None:
+                        boards.append(result[0])
+                        values.append(result[1])
+                pbar.update(len(pending_batch))
+
+        pbar.close()
 
     # Save remaining positions
     while len(boards) >= batch_size:
