@@ -74,30 +74,50 @@ class ChessDataset(Dataset):
         if not files:
             raise ValueError(f"No .npz files found in {path}")
 
-        # Phase 1: Scan files to get total size (fast - just reads headers)
+        # Phase 1: Scan files to get total size, skip corrupted files
         print("Scanning data files...")
+        valid_files = []
         file_sizes = []
         total_positions = 0
+        corrupted_files = []
 
         for f in files:
-            data = np.load(os.path.join(path, f))
-            n = len(data['boards'])
-            file_sizes.append(n)
-            total_positions += n
-            data.close()
+            file_path = os.path.join(path, f)
+            try:
+                data = np.load(file_path)
+                # Verify all arrays are readable
+                n = len(data['boards'])
+                _ = data['policies'].shape
+                _ = data['values'].shape
+                valid_files.append(f)
+                file_sizes.append(n)
+                total_positions += n
+                data.close()
 
-            if max_positions and total_positions >= max_positions:
-                break
+                if max_positions and total_positions >= max_positions:
+                    break
+            except Exception as e:
+                corrupted_files.append((f, str(e)))
+                print(f"  Warning: Skipping corrupted file {f}: {e}")
+                continue
+
+        if corrupted_files:
+            print(f"\nSkipped {len(corrupted_files)} corrupted files:")
+            for f, err in corrupted_files:
+                print(f"  - {f}")
+
+        if not valid_files:
+            raise ValueError(f"No valid .npz files found in {path}")
 
         if max_positions:
             total_positions = min(total_positions, max_positions)
 
-        print(f"Found {total_positions:,} positions in {len(file_sizes)} files")
+        print(f"Found {total_positions:,} positions in {len(valid_files)} valid files")
 
         # Phase 2: Pre-allocate arrays (single allocation - very fast)
         print("Allocating memory...")
-        # Get shape from first file
-        sample = np.load(os.path.join(path, files[0]))
+        # Get shape from first valid file
+        sample = np.load(os.path.join(path, valid_files[0]))
         board_shape = sample['boards'].shape[1:]  # (18, 8, 8)
         policy_shape = sample['policies'].shape[1:]  # (1858,)
         sample.close()
@@ -111,21 +131,32 @@ class ChessDataset(Dataset):
         offset = 0
         remaining = total_positions
 
-        for i, f in enumerate(tqdm(files[:len(file_sizes)], desc="Loading data files")):
+        for i, f in enumerate(tqdm(valid_files, desc="Loading data files")):
             if remaining <= 0:
                 break
 
-            data = np.load(os.path.join(path, f))
-            n = min(file_sizes[i], remaining)
+            try:
+                data = np.load(os.path.join(path, f))
+                n = min(file_sizes[i], remaining)
 
-            # Direct copy into pre-allocated arrays (no Python list overhead)
-            self.boards[offset:offset + n] = data['boards'][:n]
-            self.policies[offset:offset + n] = data['policies'][:n]
-            self.values[offset:offset + n] = data['values'][:n]
+                # Direct copy into pre-allocated arrays (no Python list overhead)
+                self.boards[offset:offset + n] = data['boards'][:n]
+                self.policies[offset:offset + n] = data['policies'][:n]
+                self.values[offset:offset + n] = data['values'][:n]
 
-            data.close()
-            offset += n
-            remaining -= n
+                data.close()
+                offset += n
+                remaining -= n
+            except Exception as e:
+                print(f"  Warning: Error loading {f}: {e}")
+                continue
+
+        # Trim arrays if we loaded fewer positions than expected
+        if offset < total_positions:
+            print(f"Trimming arrays from {total_positions} to {offset} positions")
+            self.boards = self.boards[:offset]
+            self.policies = self.policies[:offset]
+            self.values = self.values[:offset]
 
     def __len__(self) -> int:
         return len(self.boards)
