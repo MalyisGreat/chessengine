@@ -6,8 +6,15 @@ Supports:
 - Multi-GPU distributed training with DDP
 - Mixed precision (BF16/FP16)
 - torch.compile optimization
-- TensorBoard logging
+- TensorBoard logging with live metrics
 - Checkpoint saving/resuming
+- **Periodic benchmarking during training**
+
+Metrics logged during training:
+- Policy accuracy (top-1 and top-5)
+- Value MAE/MSE
+- Training/validation loss
+- Learning rate
 
 Usage:
     # Single GPU
@@ -69,6 +76,36 @@ def cleanup_distributed():
 def is_main_process(rank: int) -> bool:
     """Check if this is the main process"""
     return rank == 0
+
+
+def compute_metrics(policy_logits: torch.Tensor, value_pred: torch.Tensor,
+                    policy_targets: torch.Tensor, value_targets: torch.Tensor) -> dict:
+    """
+    Compute training metrics to monitor learning progress
+
+    Returns:
+        Dict with policy_acc_top1, policy_acc_top5, value_mae, value_mse
+    """
+    with torch.no_grad():
+        # Policy accuracy (top-1)
+        policy_pred = policy_logits.argmax(dim=-1)
+        policy_target_idx = policy_targets.argmax(dim=-1)
+        policy_acc_top1 = (policy_pred == policy_target_idx).float().mean().item()
+
+        # Policy accuracy (top-5)
+        _, top5_pred = policy_logits.topk(5, dim=-1)
+        policy_acc_top5 = (top5_pred == policy_target_idx.unsqueeze(-1)).any(dim=-1).float().mean().item()
+
+        # Value metrics
+        value_mae = (value_pred - value_targets).abs().mean().item()
+        value_mse = ((value_pred - value_targets) ** 2).mean().item()
+
+    return {
+        'policy_acc_top1': policy_acc_top1,
+        'policy_acc_top5': policy_acc_top5,
+        'value_mae': value_mae,
+        'value_mse': value_mse,
+    }
 
 
 class Trainer:
@@ -226,23 +263,47 @@ class Trainer:
             # Logging
             if self.is_main:
                 lr = self.optimizer.param_groups[0]['lr']
-                print(f"\nEpoch {epoch + 1}/{self.config.training.epochs}")
-                print(f"  Train Loss: {train_metrics['loss']:.4f}")
-                print(f"  Policy Loss: {train_metrics['policy_loss']:.4f}")
-                print(f"  Value Loss: {train_metrics['value_loss']:.4f}")
-                print(f"  LR: {lr:.6f}")
+                print(f"\n{'='*60}")
+                print(f"Epoch {epoch + 1}/{self.config.training.epochs}")
+                print(f"{'='*60}")
+                print(f"  Train Loss:     {train_metrics['loss']:.4f}")
+                print(f"  Policy Loss:    {train_metrics['policy_loss']:.4f}")
+                print(f"  Value Loss:     {train_metrics['value_loss']:.4f}")
+                print(f"  Policy Acc:     {train_metrics['policy_acc_top1']*100:.2f}% (top-1)")
+                print(f"  Policy Acc:     {train_metrics['policy_acc_top5']*100:.2f}% (top-5)")
+                print(f"  Value MAE:      {train_metrics['value_mae']:.4f}")
+                print(f"  Learning Rate:  {lr:.6f}")
 
                 if val_metrics:
-                    print(f"  Val Loss: {val_metrics['loss']:.4f}")
+                    print(f"\n  [Validation]")
+                    print(f"  Val Loss:       {val_metrics['loss']:.4f}")
+                    print(f"  Val Policy Acc: {val_metrics['policy_acc_top1']*100:.2f}% (top-1)")
+                    print(f"  Val Value MAE:  {val_metrics['value_mae']:.4f}")
 
-                # TensorBoard
+                # TensorBoard - Training metrics
                 self.writer.add_scalar('train/loss', train_metrics['loss'], epoch)
                 self.writer.add_scalar('train/policy_loss', train_metrics['policy_loss'], epoch)
                 self.writer.add_scalar('train/value_loss', train_metrics['value_loss'], epoch)
+                self.writer.add_scalar('train/policy_acc_top1', train_metrics['policy_acc_top1'], epoch)
+                self.writer.add_scalar('train/policy_acc_top5', train_metrics['policy_acc_top5'], epoch)
+                self.writer.add_scalar('train/value_mae', train_metrics['value_mae'], epoch)
                 self.writer.add_scalar('train/lr', lr, epoch)
 
                 if val_metrics:
                     self.writer.add_scalar('val/loss', val_metrics['loss'], epoch)
+                    self.writer.add_scalar('val/policy_acc_top1', val_metrics['policy_acc_top1'], epoch)
+                    self.writer.add_scalar('val/value_mae', val_metrics['value_mae'], epoch)
+
+                # Run Stockfish evaluation every N epochs
+                if self.config.training.eval_every_n_epochs > 0 and (epoch + 1) % self.config.training.eval_every_n_epochs == 0:
+                    stockfish_metrics = self._run_stockfish_eval(num_games=self.config.training.eval_num_games)
+                    if stockfish_metrics:
+                        print(f"\n  [Stockfish Evaluation]")
+                        print(f"  Win Rate:       {stockfish_metrics['win_rate']*100:.1f}%")
+                        print(f"  Draw Rate:      {stockfish_metrics['draw_rate']*100:.1f}%")
+                        print(f"  Avg Game Len:   {stockfish_metrics['avg_game_length']:.1f} moves")
+                        self.writer.add_scalar('eval/stockfish_win_rate', stockfish_metrics['win_rate'], epoch)
+                        self.writer.add_scalar('eval/stockfish_draw_rate', stockfish_metrics['draw_rate'], epoch)
 
                 # Save checkpoint
                 is_best = train_metrics['loss'] < self.best_loss
@@ -266,6 +327,9 @@ class Trainer:
         total_loss = 0.0
         total_policy_loss = 0.0
         total_value_loss = 0.0
+        total_policy_acc_top1 = 0.0
+        total_policy_acc_top5 = 0.0
+        total_value_mae = 0.0
         num_batches = 0
 
         pbar = tqdm(
@@ -298,30 +362,43 @@ class Trainer:
                 loss.backward()
                 self.optimizer.step()
 
+            # Compute metrics for this batch
+            metrics = compute_metrics(policy_logits, value_pred, policy_targets, value_targets)
+
             # Accumulate metrics
             total_loss += loss.item()
             total_policy_loss += p_loss.item()
             total_value_loss += v_loss.item()
+            total_policy_acc_top1 += metrics['policy_acc_top1']
+            total_policy_acc_top5 += metrics['policy_acc_top5']
+            total_value_mae += metrics['value_mae']
             num_batches += 1
             self.global_step += 1
 
-            # Update progress bar
+            # Update progress bar with accuracy info
             pbar.set_postfix({
                 'loss': f'{loss.item():.4f}',
-                'p_loss': f'{p_loss.item():.4f}',
-                'v_loss': f'{v_loss.item():.4f}',
+                'acc': f'{metrics["policy_acc_top1"]*100:.1f}%',
+                'top5': f'{metrics["policy_acc_top5"]*100:.1f}%',
+                'v_mae': f'{metrics["value_mae"]:.3f}',
             })
 
-            # Periodic logging
+            # Periodic logging to TensorBoard
             if self.is_main and self.global_step % self.config.training.log_every == 0:
                 self.writer.add_scalar('step/loss', loss.item(), self.global_step)
                 self.writer.add_scalar('step/policy_loss', p_loss.item(), self.global_step)
                 self.writer.add_scalar('step/value_loss', v_loss.item(), self.global_step)
+                self.writer.add_scalar('step/policy_acc_top1', metrics['policy_acc_top1'], self.global_step)
+                self.writer.add_scalar('step/policy_acc_top5', metrics['policy_acc_top5'], self.global_step)
+                self.writer.add_scalar('step/value_mae', metrics['value_mae'], self.global_step)
 
         return {
             'loss': total_loss / num_batches,
             'policy_loss': total_policy_loss / num_batches,
             'value_loss': total_value_loss / num_batches,
+            'policy_acc_top1': total_policy_acc_top1 / num_batches,
+            'policy_acc_top5': total_policy_acc_top5 / num_batches,
+            'value_mae': total_value_mae / num_batches,
         }
 
     @torch.no_grad()
@@ -332,6 +409,9 @@ class Trainer:
         total_loss = 0.0
         total_policy_loss = 0.0
         total_value_loss = 0.0
+        total_policy_acc_top1 = 0.0
+        total_policy_acc_top5 = 0.0
+        total_value_mae = 0.0
         num_batches = 0
 
         for boards, policy_targets, value_targets in val_loader:
@@ -346,15 +426,135 @@ class Trainer:
                     policy_targets, value_targets,
                 )
 
+            # Compute metrics
+            metrics = compute_metrics(policy_logits, value_pred, policy_targets, value_targets)
+
             total_loss += loss.item()
             total_policy_loss += p_loss.item()
             total_value_loss += v_loss.item()
+            total_policy_acc_top1 += metrics['policy_acc_top1']
+            total_policy_acc_top5 += metrics['policy_acc_top5']
+            total_value_mae += metrics['value_mae']
             num_batches += 1
 
         return {
             'loss': total_loss / num_batches,
             'policy_loss': total_policy_loss / num_batches,
             'value_loss': total_value_loss / num_batches,
+            'policy_acc_top1': total_policy_acc_top1 / num_batches,
+            'policy_acc_top5': total_policy_acc_top5 / num_batches,
+            'value_mae': total_value_mae / num_batches,
+        }
+
+    def _run_stockfish_eval(self, num_games: int = 10) -> Optional[dict]:
+        """
+        Run quick evaluation games against Stockfish
+
+        Args:
+            num_games: Number of games to play
+
+        Returns:
+            Dict with win_rate, draw_rate, avg_game_length or None if Stockfish unavailable
+        """
+        try:
+            from stockfish import Stockfish
+            import chess
+        except ImportError:
+            print("  [Stockfish not available - skipping evaluation]")
+            return None
+
+        # Try to find Stockfish
+        stockfish_paths = [
+            "stockfish",
+            "/usr/bin/stockfish",
+            "/usr/local/bin/stockfish",
+            "/usr/games/stockfish",
+        ]
+
+        sf = None
+        for path in stockfish_paths:
+            try:
+                sf = Stockfish(path, depth=5)  # Low depth for speed
+                sf.set_skill_level(5)  # Medium difficulty
+                break
+            except:
+                continue
+
+        if sf is None:
+            print("  [Stockfish not found - skipping evaluation]")
+            return None
+
+        print(f"\n  Running {num_games} games vs Stockfish (skill 5)...")
+
+        # Get model for evaluation
+        model = self.model.module if hasattr(self.model, 'module') else self.model
+        model.eval()
+
+        encoder = BoardEncoder()
+        wins = 0
+        draws = 0
+        total_moves = 0
+
+        for game_idx in range(num_games):
+            board = chess.Board()
+            engine_plays_white = (game_idx % 2 == 0)
+            move_count = 0
+
+            while not board.is_game_over() and move_count < 200:
+                is_engine_turn = (board.turn == chess.WHITE) == engine_plays_white
+
+                if is_engine_turn:
+                    # Our engine's turn
+                    board_tensor = torch.from_numpy(encoder.encode_board(board)).unsqueeze(0).to(self.device)
+                    with torch.no_grad():
+                        policy_logits, _ = model(board_tensor)
+
+                    # Get best legal move
+                    policy_probs = torch.softmax(policy_logits[0], dim=0)
+                    legal_moves = list(board.legal_moves)
+
+                    best_move = None
+                    best_prob = -1
+                    for move in legal_moves:
+                        move_idx = encoder.encode_move(move)
+                        if move_idx >= 0 and policy_probs[move_idx].item() > best_prob:
+                            best_prob = policy_probs[move_idx].item()
+                            best_move = move
+
+                    if best_move is None:
+                        best_move = legal_moves[0]
+
+                    board.push(best_move)
+                else:
+                    # Stockfish's turn
+                    sf.set_fen_position(board.fen())
+                    sf_move = sf.get_best_move()
+                    if sf_move:
+                        board.push(chess.Move.from_uci(sf_move))
+                    else:
+                        break
+
+                move_count += 1
+
+            total_moves += move_count
+
+            # Determine result
+            result = board.result()
+            if result == "1-0":
+                if engine_plays_white:
+                    wins += 1
+            elif result == "0-1":
+                if not engine_plays_white:
+                    wins += 1
+            elif result == "1/2-1/2":
+                draws += 1
+
+        model.train()
+
+        return {
+            'win_rate': wins / num_games,
+            'draw_rate': draws / num_games,
+            'avg_game_length': total_moves / num_games,
         }
 
     def save_checkpoint(self, is_best: bool = False):

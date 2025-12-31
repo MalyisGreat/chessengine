@@ -46,10 +46,14 @@ class TrainingConfig:
     dropout: float = 0.0
     label_smoothing: float = 0.0
 
-    # Checkpointing
+    # Checkpointing and logging
     checkpoint_every: int = 1000
     eval_every: int = 500
     log_every: int = 100
+
+    # Stockfish evaluation during training
+    eval_every_n_epochs: int = 1      # Run Stockfish eval every N epochs (0 to disable)
+    eval_num_games: int = 10          # Number of games per evaluation
 
 
 @dataclass
