@@ -19,8 +19,72 @@ from typing import List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor
 import shutil
 
-# Global chess import for multiprocessing workers
+# Global chess import (only used for streaming fallback)
 import chess
+
+
+# Fast FEN parsing - avoids chess.Board() overhead
+PIECE_TO_PLANE = {
+    'P': 0, 'N': 1, 'B': 2, 'R': 3, 'Q': 4, 'K': 5,  # White pieces
+    'p': 6, 'n': 7, 'b': 8, 'r': 9, 'q': 10, 'k': 11,  # Black pieces
+}
+
+
+def fast_parse_fen(fen: str, tensor: np.ndarray) -> bool:
+    """
+    Parse FEN string directly into pre-allocated tensor (18x8x8).
+    Returns True on success, False on error.
+
+    Much faster than chess.Board(fen) - avoids object creation overhead.
+    """
+    try:
+        parts = fen.split(' ')
+        if len(parts) < 4:
+            return False
+
+        position, turn, castling, ep = parts[0], parts[1], parts[2], parts[3]
+
+        # Parse piece positions (planes 0-11)
+        rank = 7  # Start from rank 8 (index 7)
+        file = 0
+
+        for char in position:
+            if char == '/':
+                rank -= 1
+                file = 0
+            elif char.isdigit():
+                file += int(char)
+            elif char in PIECE_TO_PLANE:
+                plane = PIECE_TO_PLANE[char]
+                tensor[plane, rank, file] = 1.0
+                file += 1
+            else:
+                return False
+
+        # Side to move (plane 12)
+        if turn == 'w':
+            tensor[12, :, :] = 1.0
+
+        # Castling rights (planes 13-16)
+        if 'K' in castling:
+            tensor[13, :, :] = 1.0
+        if 'Q' in castling:
+            tensor[14, :, :] = 1.0
+        if 'k' in castling:
+            tensor[15, :, :] = 1.0
+        if 'q' in castling:
+            tensor[16, :, :] = 1.0
+
+        # En passant (plane 17)
+        if ep != '-' and len(ep) == 2:
+            ep_file = ord(ep[0]) - ord('a')
+            ep_rank = int(ep[1]) - 1
+            if 0 <= ep_file < 8 and 0 <= ep_rank < 8:
+                tensor[17, ep_rank, ep_file] = 1.0
+
+        return True
+    except:
+        return False
 
 
 def _fen_to_tensor(fen: str) -> np.ndarray:
@@ -153,65 +217,50 @@ def download_lichess_evaluations(
     chunk_idx = 0
 
     if not use_streaming:
-        # FAST PATH: Direct batch processing (no multiprocessing overhead)
+        # FAST PATH: Load all data into memory first, then process
         total = len(ds)
-        process_batch_size = batch_size  # Process one chunk at a time
+
+        print("Loading all FEN strings into memory...")
+        # Convert to pandas for faster access (loads fully into RAM)
+        df = ds.to_pandas()
+        all_fens = df['fen'].tolist()
+        all_cps = df['cp'].tolist() if 'cp' in df.columns else [None] * total
+        all_mates = df['mate'].tolist() if 'mate' in df.columns else [None] * total
+        del df  # Free pandas dataframe
+        print(f"Loaded {len(all_fens):,} positions into memory")
+
+        process_batch_size = batch_size
 
         pbar = tqdm(total=total, desc="Processing positions")
 
         for start in range(0, total, process_batch_size):
             end = min(start + process_batch_size, total)
-            batch = ds[start:end]
-            batch_len = len(batch['fen'])
+            batch_len = end - start
 
             # Pre-allocate numpy arrays
             boards_arr = np.zeros((batch_len, 18, 8, 8), dtype=np.float32)
             values_arr = np.zeros(batch_len, dtype=np.float32)
 
             valid_count = 0
+
             for i in range(batch_len):
-                try:
-                    fen = batch['fen'][i]
-                    cp = batch['cp'][i] if 'cp' in batch and batch['cp'][i] is not None else None
-                    mate = batch['mate'][i] if 'mate' in batch and batch['mate'][i] is not None else None
+                idx = start + i
+                fen = all_fens[idx]
+                cp = all_cps[idx]
+                mate = all_mates[idx]
 
-                    # Inline FEN parsing for speed
-                    board = chess.Board(fen)
-
-                    # Piece planes (0-11)
-                    for sq in chess.SQUARES:
-                        piece = board.piece_at(sq)
-                        if piece:
-                            plane = (piece.piece_type - 1) + (6 if piece.color == chess.BLACK else 0)
-                            boards_arr[valid_count, plane, sq // 8, sq % 8] = 1.0
-
-                    # Side to move (plane 12)
-                    if board.turn == chess.WHITE:
-                        boards_arr[valid_count, 12, :, :] = 1.0
-
-                    # Castling (planes 13-16)
-                    if board.has_kingside_castling_rights(chess.WHITE):
-                        boards_arr[valid_count, 13, :, :] = 1.0
-                    if board.has_queenside_castling_rights(chess.WHITE):
-                        boards_arr[valid_count, 14, :, :] = 1.0
-                    if board.has_kingside_castling_rights(chess.BLACK):
-                        boards_arr[valid_count, 15, :, :] = 1.0
-                    if board.has_queenside_castling_rights(chess.BLACK):
-                        boards_arr[valid_count, 16, :, :] = 1.0
-
-                    # En passant (plane 17)
-                    if board.ep_square is not None:
-                        boards_arr[valid_count, 17, board.ep_square // 8, board.ep_square % 8] = 1.0
-
-                    # Value
-                    if mate is not None:
-                        values_arr[valid_count] = 1.0 if mate > 0 else -1.0
-                    elif cp is not None:
-                        values_arr[valid_count] = float(np.tanh(cp / 1000.0))
-
-                    valid_count += 1
-                except Exception:
+                # Fast FEN parsing (no chess.Board overhead)
+                if not fast_parse_fen(fen, boards_arr[valid_count]):
+                    boards_arr[valid_count] = 0  # Clear partial writes
                     continue
+
+                # Value
+                if mate is not None:
+                    values_arr[valid_count] = 1.0 if mate > 0 else -1.0
+                elif cp is not None:
+                    values_arr[valid_count] = np.tanh(cp / 1000.0)
+
+                valid_count += 1
 
             # Save chunk
             if valid_count > 0:
@@ -229,64 +278,36 @@ def download_lichess_evaluations(
         values_list = []
 
         for example in ds:
-            try:
-                fen = example['fen']
-                cp = example.get('cp')
-                mate = example.get('mate')
+            fen = example['fen']
+            cp = example.get('cp')
+            mate = example.get('mate')
 
-                # Parse FEN
-                board = chess.Board(fen)
-                tensor = np.zeros((18, 8, 8), dtype=np.float32)
-
-                # Piece planes
-                for sq in chess.SQUARES:
-                    piece = board.piece_at(sq)
-                    if piece:
-                        plane = (piece.piece_type - 1) + (6 if piece.color == chess.BLACK else 0)
-                        tensor[plane, sq // 8, sq % 8] = 1.0
-
-                # Side to move
-                if board.turn == chess.WHITE:
-                    tensor[12, :, :] = 1.0
-
-                # Castling
-                if board.has_kingside_castling_rights(chess.WHITE):
-                    tensor[13, :, :] = 1.0
-                if board.has_queenside_castling_rights(chess.WHITE):
-                    tensor[14, :, :] = 1.0
-                if board.has_kingside_castling_rights(chess.BLACK):
-                    tensor[15, :, :] = 1.0
-                if board.has_queenside_castling_rights(chess.BLACK):
-                    tensor[16, :, :] = 1.0
-
-                # En passant
-                if board.ep_square is not None:
-                    tensor[17, board.ep_square // 8, board.ep_square % 8] = 1.0
-
-                # Value
-                if mate is not None:
-                    value = 1.0 if mate > 0 else -1.0
-                elif cp is not None:
-                    value = float(np.tanh(cp / 1000.0))
-                else:
-                    value = 0.0
-
-                boards_list.append(tensor)
-                values_list.append(value)
-                pbar.update(1)
-
-                # Save chunks as we go
-                if len(boards_list) >= batch_size:
-                    boards_arr = np.array(boards_list[:batch_size])
-                    values_arr = np.array(values_list[:batch_size])
-                    save_chunk(boards_arr, values_arr, chunk_idx)
-                    chunk_idx += 1
-                    boards_list = boards_list[batch_size:]
-                    values_list = values_list[batch_size:]
-
-            except Exception:
+            # Fast FEN parsing
+            tensor = np.zeros((18, 8, 8), dtype=np.float32)
+            if not fast_parse_fen(fen, tensor):
                 pbar.update(1)
                 continue
+
+            # Value
+            if mate is not None:
+                value = 1.0 if mate > 0 else -1.0
+            elif cp is not None:
+                value = float(np.tanh(cp / 1000.0))
+            else:
+                value = 0.0
+
+            boards_list.append(tensor)
+            values_list.append(value)
+            pbar.update(1)
+
+            # Save chunks as we go
+            if len(boards_list) >= batch_size:
+                boards_arr = np.array(boards_list[:batch_size])
+                values_arr = np.array(values_list[:batch_size])
+                save_chunk(boards_arr, values_arr, chunk_idx)
+                chunk_idx += 1
+                boards_list = boards_list[batch_size:]
+                values_list = values_list[batch_size:]
 
         pbar.close()
 
