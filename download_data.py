@@ -1,501 +1,353 @@
 """
 Data Download and Processing Script
 
-Downloads the Lichess Elite Database and processes it into training-ready format.
-Uses 8 parallel threads for fast downloading (~2-3 min for all files).
+Downloads chess training data from Hugging Face (pre-evaluated positions).
+This is MUCH faster than processing PGN files.
 
 Usage:
-    python download_data.py --dataset lichess_elite
-    python download_data.py --pgn my_games.pgn --output ./data/processed
+    python download_data.py                          # Downloads 10M positions (~5 min)
+    python download_data.py --positions 50000000     # Downloads 50M positions
+    python download_data.py --dataset lichess_pgn    # Old PGN method (slower)
 """
 
 import os
 import sys
 import argparse
-import requests
-from pathlib import Path
-from typing import List, Optional, Tuple
-import zipfile
-import subprocess
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+import numpy as np
 from tqdm import tqdm
-import tempfile
+from typing import List, Optional
+from concurrent.futures import ThreadPoolExecutor
 import shutil
-import threading
-
-from data.encoder import BoardEncoder
-from data.dataset import process_pgn_to_npz
 
 
-# Lichess Elite Database URLs
-LICHESS_ELITE_BASE = "https://database.nikonoel.fr/"
-
-# Historical archive (2013-2020)
-LICHESS_ARCHIVE_URL = "https://odysee.com/@nikonoel:4/lichess_elite_2020_05.7z"
-
-# All monthly files (2020-2024)
-MONTHLY_FILES = [
-    # 2020
-    "lichess_elite_2020-06.zip",
-    "lichess_elite_2020-07.zip",
-    "lichess_elite_2020-08.zip",
-    "lichess_elite_2020-09.zip",
-    "lichess_elite_2020-10.zip",
-    "lichess_elite_2020-11.zip",
-    "lichess_elite_2020-12.zip",
-    # 2021
-    "lichess_elite_2021-01.zip",
-    "lichess_elite_2021-02.zip",
-    "lichess_elite_2021-03.zip",
-    "lichess_elite_2021-04.zip",
-    "lichess_elite_2021-05.zip",
-    "lichess_elite_2021-06.zip",
-    "lichess_elite_2021-07.zip",
-    "lichess_elite_2021-08.zip",
-    "lichess_elite_2021-09.zip",
-    "lichess_elite_2021-10.zip",
-    "lichess_elite_2021-11.zip",
-    "lichess_elite_2021-12.zip",
-    # 2022
-    "lichess_elite_2022-01.zip",
-    "lichess_elite_2022-02.zip",
-    "lichess_elite_2022-03.zip",
-    "lichess_elite_2022-04.zip",
-    "lichess_elite_2022-05.zip",
-    "lichess_elite_2022-06.zip",
-    "lichess_elite_2022-07.zip",
-    "lichess_elite_2022-08.zip",
-    "lichess_elite_2022-09.zip",
-    "lichess_elite_2022-10.zip",
-    "lichess_elite_2022-11.zip",
-    "lichess_elite_2022-12.zip",
-    # 2023
-    "lichess_elite_2023-01.zip",
-    "lichess_elite_2023-02.zip",
-    "lichess_elite_2023-03.zip",
-    "lichess_elite_2023-04.zip",
-    "lichess_elite_2023-05.zip",
-    "lichess_elite_2023-06.zip",
-    "lichess_elite_2023-07.zip",
-    "lichess_elite_2023-08.zip",
-    "lichess_elite_2023-09.zip",
-    "lichess_elite_2023-10.zip",
-    "lichess_elite_2023-11.zip",
-    "lichess_elite_2023-12.zip",
-    # 2024
-    "lichess_elite_2024-01.zip",
-    "lichess_elite_2024-02.zip",
-    "lichess_elite_2024-03.zip",
-    "lichess_elite_2024-04.zip",
-    "lichess_elite_2024-05.zip",
-    "lichess_elite_2024-06.zip",
-    "lichess_elite_2024-07.zip",
-    "lichess_elite_2024-08.zip",
-    "lichess_elite_2024-09.zip",
-    "lichess_elite_2024-10.zip",
-    "lichess_elite_2024-11.zip",
-    "lichess_elite_2024-12.zip",
-]
-
-# Thread-safe progress tracking
-progress_lock = threading.Lock()
-download_progress = {}
-
-
-def download_file_simple(url: str, output_path: str) -> Tuple[bool, str, int]:
+def download_lichess_evaluations(
+    output_dir: str = "./data/train",
+    num_positions: int = 10_000_000,
+    batch_size: int = 100_000,
+) -> str:
     """
-    Download a file without progress bar (for parallel downloads)
+    Download pre-evaluated chess positions from Lichess/Hugging Face.
 
-    Returns:
-        Tuple of (success, filename, bytes_downloaded)
-    """
-    filename = os.path.basename(output_path)
-    try:
-        response = requests.get(url, stream=True, timeout=60)
-        response.raise_for_status()
-
-        total_size = int(response.headers.get('content-length', 0))
-        downloaded = 0
-
-        with open(output_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=65536):
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
-
-        return True, filename, downloaded
-
-    except Exception as e:
-        return False, filename, 0
-
-
-def download_and_extract(args: Tuple[str, str, str]) -> Tuple[bool, str, List[str]]:
-    """
-    Download and extract a single file (for parallel execution)
+    This is the FAST method - positions already have Stockfish evaluations.
+    No PGN parsing needed!
 
     Args:
-        args: Tuple of (filename, url, raw_dir)
+        output_dir: Where to save processed data
+        num_positions: Number of positions to download (default 10M)
+        batch_size: Positions per .npz file
 
     Returns:
-        Tuple of (success, filename, list of extracted pgn paths)
-    """
-    filename, url, raw_dir = args
-    zip_path = os.path.join(raw_dir, filename)
-    extracted_files = []
-
-    # Skip if already exists
-    if os.path.exists(zip_path):
-        # Just extract
-        try:
-            extracted_files = extract_zip(zip_path, raw_dir)
-            return True, filename, extracted_files
-        except Exception as e:
-            return False, filename, []
-
-    # Download
-    success, _, _ = download_file_simple(url, zip_path)
-
-    if not success:
-        return False, filename, []
-
-    # Extract
-    try:
-        extracted_files = extract_zip(zip_path, raw_dir)
-        return True, filename, extracted_files
-    except Exception as e:
-        return False, filename, []
-
-
-def download_file(url: str, output_path: str, desc: str = None) -> bool:
-    """
-    Download a file with progress bar (for single file downloads)
+        Path to output directory
     """
     try:
-        response = requests.get(url, stream=True, timeout=60)
-        response.raise_for_status()
+        from datasets import load_dataset
+    except ImportError:
+        print("Installing datasets library...")
+        os.system("pip install datasets")
+        from datasets import load_dataset
 
-        total_size = int(response.headers.get('content-length', 0))
+    import chess
 
-        with open(output_path, 'wb') as f:
-            with tqdm(
-                total=total_size,
-                unit='B',
-                unit_scale=True,
-                desc=desc or os.path.basename(output_path),
-            ) as pbar:
-                for chunk in response.iter_content(chunk_size=65536):
-                    if chunk:
-                        f.write(chunk)
-                        pbar.update(len(chunk))
+    os.makedirs(output_dir, exist_ok=True)
 
-        return True
-    except Exception as e:
-        print(f"Error downloading {url}: {e}")
-        return False
+    print(f"\n{'='*60}")
+    print(f"DOWNLOADING LICHESS POSITION EVALUATIONS")
+    print(f"{'='*60}")
+    print(f"Positions: {num_positions:,}")
+    print(f"Source: Hugging Face (Lichess/chess-position-evaluations)")
+    print(f"Output: {output_dir}")
+    print(f"{'='*60}\n")
 
+    # Download from Hugging Face
+    print("Connecting to Hugging Face...")
+    split = f"train[:{num_positions}]"
 
-def extract_zip(zip_path: str, output_dir: str) -> List[str]:
-    """Extract a zip file and return list of extracted files"""
-    extracted = []
-    with zipfile.ZipFile(zip_path, 'r') as zf:
-        for name in zf.namelist():
-            if name.endswith('.pgn'):
-                zf.extract(name, output_dir)
-                extracted.append(os.path.join(output_dir, name))
-    return extracted
+    print(f"Downloading {num_positions:,} positions (this may take a few minutes)...")
+    ds = load_dataset(
+        "Lichess/chess-position-evaluations",
+        split=split,
+        trust_remote_code=True,
+    )
+    print(f"Downloaded {len(ds):,} positions\n")
 
+    def fen_to_tensor(fen: str) -> np.ndarray:
+        """Convert FEN string to 12x8x8 tensor"""
+        board = chess.Board(fen)
+        tensor = np.zeros((12, 8, 8), dtype=np.float32)
 
-def extract_7z(archive_path: str, output_dir: str) -> List[str]:
-    """Extract a .7z file using 7z command"""
-    try:
-        subprocess.run(
-            ['7z', 'x', archive_path, f'-o{output_dir}', '-y'],
-            check=True,
-            capture_output=True,
+        piece_to_plane = {
+            (chess.PAWN, chess.WHITE): 0,
+            (chess.KNIGHT, chess.WHITE): 1,
+            (chess.BISHOP, chess.WHITE): 2,
+            (chess.ROOK, chess.WHITE): 3,
+            (chess.QUEEN, chess.WHITE): 4,
+            (chess.KING, chess.WHITE): 5,
+            (chess.PAWN, chess.BLACK): 6,
+            (chess.KNIGHT, chess.BLACK): 7,
+            (chess.BISHOP, chess.BLACK): 8,
+            (chess.ROOK, chess.BLACK): 9,
+            (chess.QUEEN, chess.BLACK): 10,
+            (chess.KING, chess.BLACK): 11,
+        }
+
+        for sq in chess.SQUARES:
+            piece = board.piece_at(sq)
+            if piece:
+                plane = piece_to_plane[(piece.piece_type, piece.color)]
+                rank = sq // 8
+                file = sq % 8
+                tensor[plane, rank, file] = 1.0
+
+        return tensor
+
+    def normalize_eval(cp: Optional[int], mate: Optional[int]) -> float:
+        """Convert centipawn/mate to [-1, 1] value"""
+        if mate is not None:
+            # Mate score: positive = white wins, negative = black wins
+            return 1.0 if mate > 0 else -1.0
+        elif cp is not None:
+            # Centipawn score: normalize with tanh
+            # cp=1000 (~10 pawns) -> ~0.76
+            # cp=300 (~3 pawns) -> ~0.29
+            return float(np.tanh(cp / 1000.0))
+        else:
+            return 0.0
+
+    print("Converting to training format...")
+
+    total_chunks = (len(ds) + batch_size - 1) // batch_size
+
+    for chunk_idx in tqdm(range(total_chunks), desc="Processing chunks"):
+        start = chunk_idx * batch_size
+        end = min(start + batch_size, len(ds))
+
+        batch = ds[start:end]
+
+        # Convert FENs to tensors
+        boards = []
+        values = []
+
+        for i in range(len(batch['fen'])):
+            try:
+                tensor = fen_to_tensor(batch['fen'][i])
+                value = normalize_eval(batch['cp'][i], batch['mate'][i])
+                boards.append(tensor)
+                values.append(value)
+            except Exception as e:
+                continue
+
+        if not boards:
+            continue
+
+        boards = np.array(boards, dtype=np.float32)
+        values = np.array(values, dtype=np.float32)
+
+        # Create dummy policy (we're doing value-only training)
+        policies = np.zeros((len(boards), 1858), dtype=np.float32)
+
+        # Save chunk
+        chunk_path = os.path.join(output_dir, f"chunk_{chunk_idx:06d}.npz")
+        np.savez_compressed(
+            chunk_path,
+            boards=boards,
+            policies=policies,
+            values=values,
         )
-        extracted = []
-        for root, _, files in os.walk(output_dir):
-            for f in files:
-                if f.endswith('.pgn'):
-                    extracted.append(os.path.join(root, f))
-        return extracted
-    except FileNotFoundError:
-        print("7z not found. Please install p7zip or 7-zip.")
-        print("On Ubuntu: sudo apt install p7zip-full")
-        print("On Mac: brew install p7zip")
-        return []
-    except subprocess.CalledProcessError as e:
-        print(f"Error extracting {archive_path}: {e}")
-        return []
+
+    # Count total positions saved
+    total_positions = 0
+    for f in os.listdir(output_dir):
+        if f.endswith('.npz'):
+            data = np.load(os.path.join(output_dir, f))
+            total_positions += len(data['boards'])
+
+    print(f"\n{'='*60}")
+    print(f"DOWNLOAD COMPLETE")
+    print(f"{'='*60}")
+    print(f"Total positions: {total_positions:,}")
+    print(f"Saved to: {output_dir}")
+    print(f"Chunks: {total_chunks}")
+    print(f"{'='*60}\n")
+
+    return output_dir
 
 
-def download_lichess_elite_parallel(
+def download_lichess_pgn_parallel(
     output_dir: str,
     max_files: Optional[int] = None,
     num_threads: int = 8,
 ) -> List[str]:
     """
-    Download Lichess Elite Database using parallel threads
-
-    Args:
-        output_dir: Output directory
-        max_files: Maximum monthly files to download (None = all)
-        num_threads: Number of parallel download threads (default: 8)
-
-    Returns:
-        List of downloaded PGN file paths
+    OLD METHOD: Download Lichess Elite PGN files.
+    This is slower - use download_lichess_evaluations() instead.
     """
+    import requests
+    import zipfile
+    import threading
+    from concurrent.futures import as_completed
+
+    LICHESS_ELITE_BASE = "https://database.nikonoel.fr/"
+
+    MONTHLY_FILES = [
+        "lichess_elite_2020-06.zip", "lichess_elite_2020-07.zip",
+        "lichess_elite_2020-08.zip", "lichess_elite_2020-09.zip",
+        "lichess_elite_2020-10.zip", "lichess_elite_2020-11.zip",
+        "lichess_elite_2020-12.zip", "lichess_elite_2021-01.zip",
+        "lichess_elite_2021-02.zip", "lichess_elite_2021-03.zip",
+        "lichess_elite_2021-04.zip", "lichess_elite_2021-05.zip",
+        "lichess_elite_2021-06.zip", "lichess_elite_2021-07.zip",
+        "lichess_elite_2021-08.zip", "lichess_elite_2021-09.zip",
+        "lichess_elite_2021-10.zip", "lichess_elite_2021-11.zip",
+        "lichess_elite_2021-12.zip", "lichess_elite_2022-01.zip",
+    ]
+
     raw_dir = os.path.join(output_dir, "raw")
     os.makedirs(raw_dir, exist_ok=True)
 
-    # Prepare download tasks
     files_to_download = MONTHLY_FILES[:max_files] if max_files else MONTHLY_FILES
-    tasks = [
-        (filename, f"{LICHESS_ELITE_BASE}{filename}", raw_dir)
-        for filename in files_to_download
-    ]
 
-    print(f"\n{'='*60}")
-    print(f"PARALLEL DOWNLOAD - {len(tasks)} files with {num_threads} threads")
-    print(f"{'='*60}\n")
+    def download_and_extract(filename):
+        url = f"{LICHESS_ELITE_BASE}{filename}"
+        zip_path = os.path.join(raw_dir, filename)
+
+        if os.path.exists(zip_path):
+            pass
+        else:
+            try:
+                response = requests.get(url, stream=True, timeout=60)
+                response.raise_for_status()
+                with open(zip_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=65536):
+                        if chunk:
+                            f.write(chunk)
+            except Exception as e:
+                return False, filename, []
+
+        try:
+            extracted = []
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                for name in zf.namelist():
+                    if name.endswith('.pgn'):
+                        zf.extract(name, raw_dir)
+                        extracted.append(os.path.join(raw_dir, name))
+            return True, filename, extracted
+        except Exception:
+            return False, filename, []
+
+    print(f"Downloading {len(files_to_download)} files with {num_threads} threads...")
 
     all_pgn_files = []
-    successful = 0
-    failed = 0
-
-    # Use ThreadPoolExecutor for parallel downloads
     with ThreadPoolExecutor(max_workers=num_threads) as executor:
-        # Submit all tasks
-        futures = {
-            executor.submit(download_and_extract, task): task[0]
-            for task in tasks
-        }
-
-        # Track progress with tqdm
-        with tqdm(total=len(tasks), desc="Downloading", unit="file") as pbar:
-            for future in as_completed(futures):
-                filename = futures[future]
-                try:
-                    success, name, extracted = future.result()
-                    if success:
-                        successful += 1
-                        all_pgn_files.extend(extracted)
-                        pbar.set_postfix({"last": name, "ok": successful, "fail": failed})
-                    else:
-                        failed += 1
-                        pbar.set_postfix({"last": name, "ok": successful, "fail": failed})
-                except Exception as e:
-                    failed += 1
-                    pbar.set_postfix({"error": str(e)[:20]})
-                pbar.update(1)
-
-    print(f"\n{'='*60}")
-    print(f"DOWNLOAD COMPLETE")
-    print(f"  Successful: {successful}/{len(tasks)}")
-    print(f"  Failed: {failed}/{len(tasks)}")
-    print(f"  PGN files extracted: {len(all_pgn_files)}")
-    print(f"{'='*60}\n")
+        futures = {executor.submit(download_and_extract, f): f for f in files_to_download}
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Downloading"):
+            success, name, extracted = future.result()
+            if success:
+                all_pgn_files.extend(extracted)
 
     return all_pgn_files
 
 
-def process_all_pgns_parallel(
-    pgn_files: List[str],
-    output_dir: str,
-    min_elo: int = 2300,
-    max_games_per_file: Optional[int] = None,
-    num_workers: int = 4,
-) -> str:
-    """
-    Process all PGN files into training data (with parallel processing)
-    """
-    processed_dir = os.path.join(output_dir, "processed")
-    os.makedirs(processed_dir, exist_ok=True)
-
-    encoder = BoardEncoder()
-
-    print(f"\nProcessing {len(pgn_files)} PGN files...")
-
-    for i, pgn_path in enumerate(pgn_files):
-        print(f"\n[{i+1}/{len(pgn_files)}] Processing {os.path.basename(pgn_path)}")
-
-        file_output = os.path.join(processed_dir, f"data_{i:04d}")
-        os.makedirs(file_output, exist_ok=True)
-
-        try:
-            process_pgn_to_npz(
-                pgn_path=pgn_path,
-                output_path=file_output,
-                encoder=encoder,
-                min_elo=min_elo,
-                max_games=max_games_per_file,
-            )
-        except Exception as e:
-            print(f"  Error processing {pgn_path}: {e}")
-            continue
-
-    # Merge all chunks into single directory
-    final_dir = os.path.join(output_dir, "train")
-    os.makedirs(final_dir, exist_ok=True)
-
-    chunk_idx = 0
-    for subdir in sorted(os.listdir(processed_dir)):
-        subdir_path = os.path.join(processed_dir, subdir)
-        if os.path.isdir(subdir_path):
-            for f in sorted(os.listdir(subdir_path)):
-                if f.endswith('.npz'):
-                    src = os.path.join(subdir_path, f)
-                    dst = os.path.join(final_dir, f"chunk_{chunk_idx:06d}.npz")
-                    shutil.move(src, dst)
-                    chunk_idx += 1
-
-    print(f"\nProcessed data saved to: {final_dir}")
-    print(f"Total chunks: {chunk_idx}")
-
-    return final_dir
-
-
-def create_sample_data(output_dir: str, num_games: int = 100) -> str:
-    """Create sample training data for testing"""
-    import chess
-    import numpy as np
-
-    sample_dir = os.path.join(output_dir, "sample")
-    os.makedirs(sample_dir, exist_ok=True)
-
-    encoder = BoardEncoder()
-
-    boards = []
-    policies = []
-    values = []
-
-    print(f"Generating {num_games} sample games...")
-
-    for game_idx in tqdm(range(num_games)):
-        board = chess.Board()
-        outcome = np.random.choice([-1.0, 0.0, 1.0])
-
-        moves = 0
-        while not board.is_game_over() and moves < 100:
-            legal_moves = list(board.legal_moves)
-            if not legal_moves:
-                break
-
-            move = np.random.choice(legal_moves)
-
-            board_tensor = encoder.encode_board(board)
-            policy = encoder.encode_policy(board, move)
-            value = outcome if board.turn == chess.WHITE else -outcome
-
-            boards.append(board_tensor)
-            policies.append(policy)
-            values.append(value)
-
-            board.push(move)
-            moves += 1
-
-    output_path = os.path.join(sample_dir, "sample_data.npz")
-    np.savez_compressed(
-        output_path,
-        boards=np.array(boards, dtype=np.float32),
-        policies=np.array(policies, dtype=np.float32),
-        values=np.array(values, dtype=np.float32),
-    )
-
-    print(f"Sample data saved to: {output_path}")
-    print(f"Total positions: {len(boards)}")
-
-    return sample_dir
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Download and process chess training data")
+    parser = argparse.ArgumentParser(
+        description="Download chess training data",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python download_data.py                         # Download 10M positions (recommended)
+  python download_data.py --positions 50000000    # Download 50M positions
+  python download_data.py --dataset lichess_pgn   # Use old PGN method (slower)
+        """
+    )
 
     parser.add_argument(
         "--dataset",
         type=str,
-        choices=["lichess_elite", "sample"],
-        default="sample",
-        help="Dataset to download (default: sample)",
+        choices=["lichess_eval", "lichess_pgn", "sample"],
+        default="lichess_eval",
+        help="Dataset source (default: lichess_eval - fast HuggingFace download)",
     )
     parser.add_argument(
-        "--pgn",
-        type=str,
-        help="Process a specific PGN file instead",
+        "--positions",
+        type=int,
+        default=10_000_000,
+        help="Number of positions to download (default: 10M)",
     )
     parser.add_argument(
         "--output",
         type=str,
-        default="./data",
-        help="Output directory (default: ./data)",
+        default="./data/train",
+        help="Output directory (default: ./data/train)",
     )
     parser.add_argument(
-        "--max-files",
+        "--batch-size",
         type=int,
-        help="Maximum monthly files to download (default: all)",
-    )
-    parser.add_argument(
-        "--max-games",
-        type=int,
-        help="Maximum games per PGN file",
-    )
-    parser.add_argument(
-        "--min-elo",
-        type=int,
-        default=2300,
-        help="Minimum player ELO (default: 2300)",
-    )
-    parser.add_argument(
-        "--threads",
-        type=int,
-        default=8,
-        help="Number of parallel download threads (default: 8)",
+        default=100_000,
+        help="Positions per chunk file (default: 100K)",
     )
 
     args = parser.parse_args()
 
-    output_dir = args.output
-    os.makedirs(output_dir, exist_ok=True)
-
-    if args.pgn:
-        # Process specific PGN file
-        print(f"Processing {args.pgn}...")
-        encoder = BoardEncoder()
-        processed_dir = os.path.join(output_dir, "processed")
-        process_pgn_to_npz(
-            pgn_path=args.pgn,
-            output_path=processed_dir,
-            encoder=encoder,
-            min_elo=args.min_elo,
-            max_games=args.max_games,
+    if args.dataset == "lichess_eval":
+        # RECOMMENDED: Fast download from HuggingFace
+        download_lichess_evaluations(
+            output_dir=args.output,
+            num_positions=args.positions,
+            batch_size=args.batch_size,
         )
 
-    elif args.dataset == "lichess_elite":
-        # Download Lichess Elite with parallel threads
-        print("Downloading Lichess Elite Database (parallel mode)...")
-        print(f"Using {args.threads} threads for fast downloading\n")
-
-        pgn_files = download_lichess_elite_parallel(
-            output_dir=output_dir,
-            max_files=args.max_files,
-            num_threads=args.threads,
+    elif args.dataset == "lichess_pgn":
+        # OLD METHOD: Download and process PGN files
+        print("Using old PGN method (slower). Consider using --dataset lichess_eval instead.")
+        pgn_files = download_lichess_pgn_parallel(
+            output_dir="./data",
+            max_files=20,
         )
-
         if pgn_files:
-            print("\nProcessing downloaded files...")
-            process_all_pgns_parallel(
-                pgn_files=pgn_files,
-                output_dir=output_dir,
-                min_elo=args.min_elo,
-                max_games_per_file=args.max_games,
-            )
+            from data.encoder import BoardEncoder
+            from data.dataset import process_pgn_to_npz
+            encoder = BoardEncoder()
+            for i, pgn in enumerate(pgn_files):
+                out_dir = os.path.join(args.output, f"file_{i:03d}")
+                os.makedirs(out_dir, exist_ok=True)
+                process_pgn_to_npz(pgn, out_dir, encoder, min_elo=2300, max_games=5000)
 
     elif args.dataset == "sample":
-        # Generate sample data
-        print("Generating sample data for testing...")
-        create_sample_data(output_dir, num_games=1000)
+        # Generate random sample data for testing
+        import chess
+        os.makedirs(args.output, exist_ok=True)
+        print("Generating sample data...")
 
-    print("\nDone!")
+        boards = []
+        values = []
+
+        for _ in tqdm(range(10000), desc="Generating"):
+            board = chess.Board()
+            for _ in range(np.random.randint(5, 50)):
+                legal = list(board.legal_moves)
+                if not legal:
+                    break
+                board.push(np.random.choice(legal))
+
+            tensor = np.zeros((12, 8, 8), dtype=np.float32)
+            for sq in chess.SQUARES:
+                piece = board.piece_at(sq)
+                if piece:
+                    plane = piece.piece_type - 1 + (6 if piece.color == chess.BLACK else 0)
+                    tensor[plane, sq // 8, sq % 8] = 1.0
+
+            boards.append(tensor)
+            values.append(np.random.uniform(-1, 1))
+
+        np.savez(
+            os.path.join(args.output, "sample.npz"),
+            boards=np.array(boards),
+            policies=np.zeros((len(boards), 1858)),
+            values=np.array(values),
+        )
+        print(f"Saved sample data to {args.output}")
+
+    print("\nDone! Now run:")
+    print("  python train.py --data ./data/train")
 
 
 if __name__ == "__main__":

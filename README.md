@@ -1,58 +1,69 @@
 # Chess Engine
 
-A superhuman chess engine trained using supervised learning on the Lichess Elite Database. Achieves ~3000 ELO in under 1 hour on 5x H100 GPUs.
+A superhuman chess engine trained using supervised learning on 316M Stockfish-evaluated positions. Achieves ~3000 ELO in under 1 hour on 5x H100 GPUs.
 
-## Features
+## Quick Start (One Command)
 
-- **Fast Training**: 45 min to superhuman on 5x H100 (vs 400+ hours for AlphaZero-style)
-- **Supervised Learning**: Learns from millions of Stockfish-evaluated positions
-- **Modern Architecture**: 10-block ResNet with policy and value heads
-- **Multi-GPU Support**: Distributed training with PyTorch DDP
-- **H100 Optimized**: BF16 mixed precision, torch.compile, large batch sizes
-- **Benchmarking**: ELO estimation, tactical tests, policy accuracy
+```bash
+# Clone and run everything
+git clone https://github.com/MalyisGreat/chessengine.git && cd chessengine && \
+pip install -r requirements.txt datasets && \
+python download_data.py && \
+python train.py --data ./data/train
+```
 
-## Quick Start
+## Step by Step
 
 ```bash
 # 1. Install dependencies
-pip install -r requirements.txt
+pip install -r requirements.txt datasets
 
-# 2. Download training data
-python download_data.py --dataset lichess_elite
+# 2. Download 10M positions from HuggingFace (~5 min)
+python download_data.py
 
-# 3. Train (single GPU)
+# 3. Download more positions for superhuman (optional)
+python download_data.py --positions 50000000
+
+# 4. Train (single GPU)
 python train.py --data ./data/train
 
-# 4. Train (multi-GPU)
+# 5. Train (multi-GPU, e.g. 5x H100)
 torchrun --nproc_per_node=5 train.py --data ./data/train
 
-# 5. Benchmark
+# 6. Benchmark your model
 python benchmark.py --model ./outputs/chess_engine_v1/checkpoint_best.pt --all
 
-# 6. Play!
+# 7. Play against it!
 python -m engine.play --model ./outputs/chess_engine_v1/checkpoint_best.pt
 ```
+
+## Data Source
+
+Uses [Lichess Position Evaluations](https://huggingface.co/datasets/Lichess/chess-position-evaluations) from HuggingFace:
+- **316 million** chess positions
+- Pre-evaluated by **Stockfish**
+- No PGN processing needed - instant download!
 
 ## Architecture
 
 ```
-Input: 18 planes x 8x8 (piece positions, castling, en passant, turn)
+Input: 12 planes x 8x8 (6 white pieces + 6 black pieces)
     ↓
 Conv 3x3, 256 filters
     ↓
 10x Residual Blocks (256 filters each)
     ↓
 ├── Policy Head → 1858 moves
-└── Value Head → [-1, 1]
+└── Value Head → [-1, 1] (Stockfish evaluation)
 ```
 
 ## Expected Results
 
 | GPU Setup | Training Time | Expected ELO |
 |-----------|--------------|--------------|
-| 1x A100 | 4 hours | ~2800 |
-| 1x H100 | 2.5 hours | ~2800 |
-| 5x H100 | 45 min | ~3000 |
+| 1x A100 | 2-3 hours | ~2800 |
+| 1x H100 | 1.5 hours | ~2800 |
+| 5x H100 | 30-45 min | ~3000 |
 
 **Superhuman = 2900+ ELO** (beats all humans)
 
@@ -62,7 +73,7 @@ Conv 3x3, 256 filters
 chess_engine/
 ├── train.py              # Distributed training script
 ├── benchmark.py          # ELO estimation & testing
-├── download_data.py      # Lichess data downloader
+├── download_data.py      # HuggingFace data downloader (FAST!)
 ├── config.py             # Hyperparameters
 ├── models/
 │   └── network.py        # ResNet architecture
@@ -70,7 +81,7 @@ chess_engine/
 │   ├── encoder.py        # Board encoding
 │   └── dataset.py        # PyTorch dataset
 ├── engine/
-│   ├── search.py         # Alpha-beta search
+│   ├── search.py         # Alpha-beta search + UCI
 │   └── play.py           # Interactive play
 └── scripts/
     ├── setup.sh          # Environment setup
@@ -82,6 +93,7 @@ chess_engine/
 - Python 3.8+
 - PyTorch 2.0+
 - CUDA 11.8+ (for GPU training)
+- datasets (HuggingFace)
 - python-chess
 - Stockfish (for benchmarking)
 
