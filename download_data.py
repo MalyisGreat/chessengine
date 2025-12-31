@@ -16,8 +16,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 from typing import List, Optional, Tuple
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-from multiprocessing import cpu_count
+from concurrent.futures import ThreadPoolExecutor
 import shutil
 
 # Global chess import for multiprocessing workers
@@ -143,104 +142,160 @@ def download_lichess_evaluations(
         use_streaming = True
         print(f"Streaming {num_positions:,} positions...\n")
 
-    # Limit workers to avoid memory issues (252 is overkill)
-    num_workers = min(cpu_count(), 64)
-    print(f"Converting to training format using {num_workers} CPU cores...")
+    print(f"Converting to training format (optimized single-thread)...")
 
-    def save_chunk(boards_list, values_list, idx):
+    def save_chunk(boards_arr, values_arr, idx):
         """Save a chunk of data"""
-        boards_arr = np.array(boards_list, dtype=np.float32)
-        values_arr = np.array(values_list, dtype=np.float32)
         policies = np.zeros((len(boards_arr), 1858), dtype=np.float32)
         chunk_path = os.path.join(output_dir, f"chunk_{idx:06d}.npz")
         np.savez_compressed(chunk_path, boards=boards_arr, policies=policies, values=values_arr)
 
-    boards = []
-    values = []
     chunk_idx = 0
 
     if not use_streaming:
-        # FAST PATH: Use cached dataset with batch processing
+        # FAST PATH: Direct batch processing (no multiprocessing overhead)
         total = len(ds)
-        process_batch_size = 50000  # Larger batches for cached data
+        process_batch_size = batch_size  # Process one chunk at a time
 
         pbar = tqdm(total=total, desc="Processing positions")
 
-        with ProcessPoolExecutor(max_workers=num_workers) as executor:
-            for start in range(0, total, process_batch_size):
-                end = min(start + process_batch_size, total)
-                batch = ds[start:end]
+        for start in range(0, total, process_batch_size):
+            end = min(start + process_batch_size, total)
+            batch = ds[start:end]
+            batch_len = len(batch['fen'])
 
-                # Prepare batch for parallel processing
-                args_list = [
-                    (batch['fen'][i], batch.get('cp', [None]*len(batch['fen']))[i] if 'cp' in batch else None,
-                     batch.get('mate', [None]*len(batch['fen']))[i] if 'mate' in batch else None)
-                    for i in range(len(batch['fen']))
-                ]
+            # Pre-allocate numpy arrays
+            boards_arr = np.zeros((batch_len, 18, 8, 8), dtype=np.float32)
+            values_arr = np.zeros(batch_len, dtype=np.float32)
 
-                # Process in parallel
-                results = list(executor.map(_process_example, args_list, chunksize=1000))
+            valid_count = 0
+            for i in range(batch_len):
+                try:
+                    fen = batch['fen'][i]
+                    cp = batch['cp'][i] if 'cp' in batch and batch['cp'][i] is not None else None
+                    mate = batch['mate'][i] if 'mate' in batch and batch['mate'][i] is not None else None
 
-                for result in results:
-                    if result is not None:
-                        boards.append(result[0])
-                        values.append(result[1])
+                    # Inline FEN parsing for speed
+                    board = chess.Board(fen)
 
-                pbar.update(end - start)
+                    # Piece planes (0-11)
+                    for sq in chess.SQUARES:
+                        piece = board.piece_at(sq)
+                        if piece:
+                            plane = (piece.piece_type - 1) + (6 if piece.color == chess.BLACK else 0)
+                            boards_arr[valid_count, plane, sq // 8, sq % 8] = 1.0
 
-                # Save chunks as we go
-                while len(boards) >= batch_size:
-                    save_chunk(boards[:batch_size], values[:batch_size], chunk_idx)
-                    boards = boards[batch_size:]
-                    values = values[batch_size:]
-                    chunk_idx += 1
+                    # Side to move (plane 12)
+                    if board.turn == chess.WHITE:
+                        boards_arr[valid_count, 12, :, :] = 1.0
+
+                    # Castling (planes 13-16)
+                    if board.has_kingside_castling_rights(chess.WHITE):
+                        boards_arr[valid_count, 13, :, :] = 1.0
+                    if board.has_queenside_castling_rights(chess.WHITE):
+                        boards_arr[valid_count, 14, :, :] = 1.0
+                    if board.has_kingside_castling_rights(chess.BLACK):
+                        boards_arr[valid_count, 15, :, :] = 1.0
+                    if board.has_queenside_castling_rights(chess.BLACK):
+                        boards_arr[valid_count, 16, :, :] = 1.0
+
+                    # En passant (plane 17)
+                    if board.ep_square is not None:
+                        boards_arr[valid_count, 17, board.ep_square // 8, board.ep_square % 8] = 1.0
+
+                    # Value
+                    if mate is not None:
+                        values_arr[valid_count] = 1.0 if mate > 0 else -1.0
+                    elif cp is not None:
+                        values_arr[valid_count] = float(np.tanh(cp / 1000.0))
+
+                    valid_count += 1
+                except Exception:
+                    continue
+
+            # Save chunk
+            if valid_count > 0:
+                save_chunk(boards_arr[:valid_count], values_arr[:valid_count], chunk_idx)
+                chunk_idx += 1
+
+            pbar.update(end - start)
 
         pbar.close()
 
     else:
         # SLOW PATH: Streaming mode (network bound)
         pbar = tqdm(total=num_positions, desc="Processing positions (streaming)")
-        pending_batch = []
+        boards_list = []
+        values_list = []
 
-        with ProcessPoolExecutor(max_workers=num_workers) as executor:
-            for example in ds:
-                pending_batch.append((example['fen'], example.get('cp'), example.get('mate')))
+        for example in ds:
+            try:
+                fen = example['fen']
+                cp = example.get('cp')
+                mate = example.get('mate')
 
-                if len(pending_batch) >= 10000:
-                    results = list(executor.map(_process_example, pending_batch, chunksize=500))
-                    for result in results:
-                        if result is not None:
-                            boards.append(result[0])
-                            values.append(result[1])
-                    pbar.update(len(pending_batch))
-                    pending_batch = []
+                # Parse FEN
+                board = chess.Board(fen)
+                tensor = np.zeros((18, 8, 8), dtype=np.float32)
 
-                    while len(boards) >= batch_size:
-                        save_chunk(boards[:batch_size], values[:batch_size], chunk_idx)
-                        boards = boards[batch_size:]
-                        values = values[batch_size:]
-                        chunk_idx += 1
+                # Piece planes
+                for sq in chess.SQUARES:
+                    piece = board.piece_at(sq)
+                    if piece:
+                        plane = (piece.piece_type - 1) + (6 if piece.color == chess.BLACK else 0)
+                        tensor[plane, sq // 8, sq % 8] = 1.0
 
-            if pending_batch:
-                results = list(executor.map(_process_example, pending_batch, chunksize=500))
-                for result in results:
-                    if result is not None:
-                        boards.append(result[0])
-                        values.append(result[1])
-                pbar.update(len(pending_batch))
+                # Side to move
+                if board.turn == chess.WHITE:
+                    tensor[12, :, :] = 1.0
+
+                # Castling
+                if board.has_kingside_castling_rights(chess.WHITE):
+                    tensor[13, :, :] = 1.0
+                if board.has_queenside_castling_rights(chess.WHITE):
+                    tensor[14, :, :] = 1.0
+                if board.has_kingside_castling_rights(chess.BLACK):
+                    tensor[15, :, :] = 1.0
+                if board.has_queenside_castling_rights(chess.BLACK):
+                    tensor[16, :, :] = 1.0
+
+                # En passant
+                if board.ep_square is not None:
+                    tensor[17, board.ep_square // 8, board.ep_square % 8] = 1.0
+
+                # Value
+                if mate is not None:
+                    value = 1.0 if mate > 0 else -1.0
+                elif cp is not None:
+                    value = float(np.tanh(cp / 1000.0))
+                else:
+                    value = 0.0
+
+                boards_list.append(tensor)
+                values_list.append(value)
+                pbar.update(1)
+
+                # Save chunks as we go
+                if len(boards_list) >= batch_size:
+                    boards_arr = np.array(boards_list[:batch_size])
+                    values_arr = np.array(values_list[:batch_size])
+                    save_chunk(boards_arr, values_arr, chunk_idx)
+                    chunk_idx += 1
+                    boards_list = boards_list[batch_size:]
+                    values_list = values_list[batch_size:]
+
+            except Exception:
+                pbar.update(1)
+                continue
 
         pbar.close()
 
-    # Save remaining positions
-    while len(boards) >= batch_size:
-        save_chunk(boards[:batch_size], values[:batch_size], chunk_idx)
-        boards = boards[batch_size:]
-        values = values[batch_size:]
-        chunk_idx += 1
-
-    if boards:
-        save_chunk(boards, values, chunk_idx)
-        chunk_idx += 1
+        # Save remaining
+        if boards_list:
+            boards_arr = np.array(boards_list)
+            values_arr = np.array(values_list)
+            save_chunk(boards_arr, values_arr, chunk_idx)
+            chunk_idx += 1
 
     # Count total positions saved
     total_positions = 0
