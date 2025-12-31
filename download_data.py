@@ -461,6 +461,7 @@ def download_lichess_games(
     batch_size: int = 100_000,
     min_elo: int = 2200,
     num_workers: int = 0,  # 0 = auto-detect
+    use_ram_disk: bool = False,  # Use /dev/shm for faster I/O
 ) -> str:
     """
     Download Lichess Elite games with MOVES for policy training.
@@ -476,6 +477,7 @@ def download_lichess_games(
         batch_size: Positions per .npz file
         min_elo: Minimum player ELO
         num_workers: Number of parallel workers (0 = auto)
+        use_ram_disk: Use /dev/shm (RAM) for temp files (Linux only)
 
     Returns:
         Path to output directory
@@ -496,6 +498,18 @@ def download_lichess_games(
     if num_workers == 0:
         num_workers = min(mp.cpu_count(), 16)  # Cap at 16 to avoid overhead
 
+    # Setup RAM disk if requested
+    ram_disk_path = None
+    if use_ram_disk:
+        ram_disk_path = "/dev/shm/chess_temp"
+        if os.path.exists("/dev/shm"):
+            os.makedirs(ram_disk_path, exist_ok=True)
+            print(f"Using RAM disk: {ram_disk_path}")
+        else:
+            print("WARNING: /dev/shm not available, falling back to disk")
+            use_ram_disk = False
+            ram_disk_path = None
+
     print(f"\n{'='*60}")
     print(f"DOWNLOADING LICHESS ELITE GAMES (WITH MOVES)")
     print(f"{'='*60}")
@@ -503,6 +517,8 @@ def download_lichess_games(
     print(f"Min ELO: {min_elo}")
     print(f"Output: {output_dir}")
     print(f"Parallel workers: {num_workers}")
+    if use_ram_disk:
+        print(f"RAM disk: ENABLED ({ram_disk_path})")
     print(f"{'='*60}\n")
 
     encoder = BoardEncoder()
@@ -520,8 +536,10 @@ def download_lichess_games(
         "lichess_elite_2021-01.zip", "lichess_elite_2021-02.zip",
     ]
 
-    raw_dir = os.path.join(output_dir, "raw")
+    # Use RAM disk for temp files if enabled, otherwise use output_dir/raw
+    raw_dir = ram_disk_path if use_ram_disk else os.path.join(output_dir, "raw")
     os.makedirs(raw_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)  # Ensure output dir exists for final .npz files
 
     # =========================================================================
     # PHASE 1: Download all needed zip files in parallel
@@ -667,6 +685,15 @@ def download_lichess_games(
     # Save remaining
     save_chunk()
 
+    # Cleanup RAM disk if used
+    if use_ram_disk and ram_disk_path and os.path.exists(ram_disk_path):
+        print("Cleaning up RAM disk...")
+        try:
+            shutil.rmtree(ram_disk_path)
+            print(f"  Removed {ram_disk_path}")
+        except Exception as e:
+            print(f"  Warning: Could not clean up RAM disk: {e}")
+
     print(f"\n{'='*60}")
     print(f"DOWNLOAD COMPLETE")
     print(f"{'='*60}")
@@ -772,6 +799,7 @@ Examples:
   python download_data.py --preset test                          # 2M positions with moves
   python download_data.py --preset small                         # 10M positions (baseline)
   python download_data.py --preset medium                        # 50M positions (strong)
+  python download_data.py --preset small --ram-disk              # Use RAM for faster I/O (Linux)
   python download_data.py --dataset lichess_eval --preset test   # Value-only (no moves)
         """
     )
@@ -813,6 +841,11 @@ Examples:
         default=0,
         help="Number of parallel workers (default: 0 = auto-detect CPU cores)",
     )
+    parser.add_argument(
+        "--ram-disk",
+        action="store_true",
+        help="Use /dev/shm (RAM) for temp files - faster I/O (Linux only)",
+    )
 
     args = parser.parse_args()
 
@@ -828,6 +861,7 @@ Examples:
             num_positions=args.positions,
             batch_size=args.batch_size,
             num_workers=args.workers,
+            use_ram_disk=args.ram_disk,
         )
 
     elif args.dataset == "lichess_eval":
