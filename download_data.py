@@ -344,6 +344,209 @@ def download_lichess_evaluations(
     return output_dir
 
 
+def download_lichess_games(
+    output_dir: str = "./data/train",
+    num_positions: int = 10_000_000,
+    batch_size: int = 100_000,
+    min_elo: int = 2200,
+) -> str:
+    """
+    Download Lichess Elite games with MOVES for policy training.
+
+    This extracts actual moves played, giving proper policy targets.
+    Uses game outcome as value target.
+
+    Args:
+        output_dir: Where to save processed data
+        num_positions: Target number of positions
+        batch_size: Positions per .npz file
+        min_elo: Minimum player ELO
+
+    Returns:
+        Path to output directory
+    """
+    import chess
+    import chess.pgn
+    import requests
+    import zipfile
+    import io
+
+    from data.encoder import BoardEncoder
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    print(f"\n{'='*60}")
+    print(f"DOWNLOADING LICHESS ELITE GAMES (WITH MOVES)")
+    print(f"{'='*60}")
+    print(f"Target positions: {num_positions:,}")
+    print(f"Min ELO: {min_elo}")
+    print(f"Output: {output_dir}")
+    print(f"{'='*60}\n")
+
+    encoder = BoardEncoder()
+    print(f"Policy size: {encoder.num_moves} (from encoder)")
+
+    # Download Lichess Elite PGN files
+    LICHESS_ELITE_BASE = "https://database.nikonoel.fr/"
+    MONTHLY_FILES = [
+        "lichess_elite_2023-01.zip", "lichess_elite_2023-02.zip",
+        "lichess_elite_2023-03.zip", "lichess_elite_2023-04.zip",
+        "lichess_elite_2023-05.zip", "lichess_elite_2023-06.zip",
+        "lichess_elite_2022-01.zip", "lichess_elite_2022-02.zip",
+        "lichess_elite_2022-03.zip", "lichess_elite_2022-04.zip",
+        "lichess_elite_2022-05.zip", "lichess_elite_2022-06.zip",
+        "lichess_elite_2021-01.zip", "lichess_elite_2021-02.zip",
+    ]
+
+    raw_dir = os.path.join(output_dir, "raw")
+    os.makedirs(raw_dir, exist_ok=True)
+
+    # Collect positions
+    boards_list = []
+    policies_list = []
+    values_list = []
+    chunk_idx = 0
+    total_positions = 0
+    total_games = 0
+
+    def save_chunk():
+        nonlocal chunk_idx, boards_list, policies_list, values_list
+        if not boards_list:
+            return
+        chunk_path = os.path.join(output_dir, f"chunk_{chunk_idx:06d}.npz")
+        np.savez_compressed(
+            chunk_path,
+            boards=np.array(boards_list, dtype=np.float32),
+            policies=np.array(policies_list, dtype=np.float32),
+            values=np.array(values_list, dtype=np.float32),
+        )
+        chunk_idx += 1
+        boards_list = []
+        policies_list = []
+        values_list = []
+
+    pbar = tqdm(total=num_positions, desc="Extracting positions")
+
+    for pgn_file in MONTHLY_FILES:
+        if total_positions >= num_positions:
+            break
+
+        zip_path = os.path.join(raw_dir, pgn_file)
+
+        # Download if needed
+        if not os.path.exists(zip_path):
+            print(f"\nDownloading {pgn_file}...")
+            try:
+                url = f"{LICHESS_ELITE_BASE}{pgn_file}"
+                response = requests.get(url, stream=True, timeout=120)
+                response.raise_for_status()
+                with open(zip_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=65536):
+                        if chunk:
+                            f.write(chunk)
+            except Exception as e:
+                print(f"  Failed to download: {e}")
+                continue
+
+        # Extract and process PGN
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                for name in zf.namelist():
+                    if not name.endswith('.pgn'):
+                        continue
+
+                    with zf.open(name) as pgn_bytes:
+                        pgn_text = io.TextIOWrapper(pgn_bytes, encoding='utf-8', errors='ignore')
+
+                        while total_positions < num_positions:
+                            try:
+                                game = chess.pgn.read_game(pgn_text)
+                                if game is None:
+                                    break
+                            except Exception:
+                                continue
+
+                            # Check ELO
+                            try:
+                                white_elo = int(game.headers.get('WhiteElo', '0'))
+                                black_elo = int(game.headers.get('BlackElo', '0'))
+                                if white_elo < min_elo or black_elo < min_elo:
+                                    continue
+                            except ValueError:
+                                continue
+
+                            # Get result
+                            result = game.headers.get('Result', '*')
+                            if result == '1-0':
+                                white_value, black_value = 1.0, -1.0
+                            elif result == '0-1':
+                                white_value, black_value = -1.0, 1.0
+                            elif result == '1/2-1/2':
+                                white_value, black_value = 0.0, 0.0
+                            else:
+                                continue  # Unknown result
+
+                            # Process all positions
+                            board = game.board()
+                            moves = list(game.mainline_moves())
+
+                            for i, move in enumerate(moves[:-1]):  # Skip last move
+                                # Encode board
+                                board_tensor = encoder.encode_board(board)
+
+                                # Encode move as policy target
+                                policy = np.zeros(encoder.num_moves, dtype=np.float32)
+                                move_idx = encoder.encode_move(move)
+                                if move_idx >= 0:
+                                    policy[move_idx] = 1.0
+                                else:
+                                    board.push(move)
+                                    continue  # Skip moves we can't encode
+
+                                # Value from current player's perspective
+                                value = white_value if board.turn == chess.WHITE else black_value
+
+                                boards_list.append(board_tensor)
+                                policies_list.append(policy)
+                                values_list.append(value)
+                                total_positions += 1
+                                pbar.update(1)
+
+                                board.push(move)
+
+                                # Save chunk if full
+                                if len(boards_list) >= batch_size:
+                                    save_chunk()
+
+                                if total_positions >= num_positions:
+                                    break
+
+                            total_games += 1
+
+                            if total_positions >= num_positions:
+                                break
+
+        except Exception as e:
+            print(f"  Error processing {pgn_file}: {e}")
+            continue
+
+    pbar.close()
+
+    # Save remaining
+    save_chunk()
+
+    print(f"\n{'='*60}")
+    print(f"DOWNLOAD COMPLETE")
+    print(f"{'='*60}")
+    print(f"Total games: {total_games:,}")
+    print(f"Total positions: {total_positions:,}")
+    print(f"Saved to: {output_dir}")
+    print(f"Chunks: {chunk_idx}")
+    print(f"{'='*60}\n")
+
+    return output_dir
+
+
 def download_lichess_pgn_parallel(
     output_dir: str,
     max_files: Optional[int] = None,
@@ -351,7 +554,7 @@ def download_lichess_pgn_parallel(
 ) -> List[str]:
     """
     OLD METHOD: Download Lichess Elite PGN files.
-    This is slower - use download_lichess_evaluations() instead.
+    This is slower - use download_lichess_games() instead.
     """
     import requests
     import zipfile
@@ -434,11 +637,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python download_data.py --preset test           # 2M positions (quick test)
-  python download_data.py --preset small          # 10M positions (baseline)
-  python download_data.py --preset medium         # 50M positions (strong)
-  python download_data.py --preset large          # 100M positions (superhuman)
-  python download_data.py --positions 25000000    # Custom: 25M positions
+  python download_data.py --preset test                          # 2M positions with moves
+  python download_data.py --preset small                         # 10M positions (baseline)
+  python download_data.py --preset medium                        # 50M positions (strong)
+  python download_data.py --dataset lichess_eval --preset test   # Value-only (no moves)
         """
     )
 
@@ -451,9 +653,9 @@ Examples:
     parser.add_argument(
         "--dataset",
         type=str,
-        choices=["lichess_eval", "lichess_pgn", "sample"],
-        default="lichess_eval",
-        help="Dataset source (default: lichess_eval - fast HuggingFace download)",
+        choices=["lichess_eval", "lichess_games", "lichess_pgn", "sample"],
+        default="lichess_games",
+        help="Dataset source: lichess_games (with moves, best for training), lichess_eval (value only)",
     )
     parser.add_argument(
         "--positions",
@@ -481,8 +683,18 @@ Examples:
         args.positions = PRESETS[args.preset]
         print(f"Using preset '{args.preset}': {args.positions:,} positions")
 
-    if args.dataset == "lichess_eval":
-        # RECOMMENDED: Fast download from HuggingFace
+    if args.dataset == "lichess_games":
+        # RECOMMENDED: Games with moves for policy training
+        download_lichess_games(
+            output_dir=args.output,
+            num_positions=args.positions,
+            batch_size=args.batch_size,
+        )
+
+    elif args.dataset == "lichess_eval":
+        # Fast download from HuggingFace (value training only)
+        print("WARNING: lichess_eval has no move data - policy training won't work!")
+        print("Use --dataset lichess_games for proper policy+value training.\n")
         download_lichess_evaluations(
             output_dir=args.output,
             num_positions=args.positions,
