@@ -46,53 +46,86 @@ class ChessDataset(Dataset):
         self.encoder = encoder or BoardEncoder()
         self.augment = augment
 
-        # Load data
-        self.boards = []
-        self.policies = []
-        self.values = []
-
         if os.path.isfile(data_path) and data_path.endswith('.npz'):
-            self._load_npz(data_path, max_positions)
+            self._load_single_npz(data_path, max_positions)
         elif os.path.isdir(data_path):
-            self._load_directory(data_path, max_positions)
+            self._load_directory_fast(data_path, max_positions)
         else:
             raise ValueError(f"Invalid data path: {data_path}")
 
-        # Convert to numpy arrays
-        self.boards = np.array(self.boards, dtype=np.float32)
-        self.policies = np.array(self.policies, dtype=np.float32)
-        self.values = np.array(self.values, dtype=np.float32)
-
         print(f"Loaded {len(self)} positions")
 
-    def _load_npz(self, path: str, max_positions: Optional[int] = None):
+    def _load_single_npz(self, path: str, max_positions: Optional[int] = None):
         """Load a single .npz file"""
         data = np.load(path)
-        boards = data['boards']
-        policies = data['policies']
-        values = data['values']
+        self.boards = data['boards']
+        self.policies = data['policies']
+        self.values = data['values']
 
-        if max_positions:
-            boards = boards[:max_positions]
-            policies = policies[:max_positions]
-            values = values[:max_positions]
+        if max_positions and len(self.boards) > max_positions:
+            self.boards = self.boards[:max_positions]
+            self.policies = self.policies[:max_positions]
+            self.values = self.values[:max_positions]
 
-        self.boards.extend(boards)
-        self.policies.extend(policies)
-        self.values.extend(values)
-
-    def _load_directory(self, path: str, max_positions: Optional[int] = None):
-        """Load all .npz files from a directory"""
+    def _load_directory_fast(self, path: str, max_positions: Optional[int] = None):
+        """Load all .npz files from a directory - FAST version with pre-allocation"""
         files = sorted([f for f in os.listdir(path) if f.endswith('.npz')])
-        total_loaded = 0
 
-        for f in tqdm(files, desc="Loading data files"):
-            if max_positions and total_loaded >= max_positions:
+        if not files:
+            raise ValueError(f"No .npz files found in {path}")
+
+        # Phase 1: Scan files to get total size (fast - just reads headers)
+        print("Scanning data files...")
+        file_sizes = []
+        total_positions = 0
+
+        for f in files:
+            data = np.load(os.path.join(path, f))
+            n = len(data['boards'])
+            file_sizes.append(n)
+            total_positions += n
+            data.close()
+
+            if max_positions and total_positions >= max_positions:
                 break
 
-            remaining = max_positions - total_loaded if max_positions else None
-            self._load_npz(os.path.join(path, f), remaining)
-            total_loaded = len(self.boards)
+        if max_positions:
+            total_positions = min(total_positions, max_positions)
+
+        print(f"Found {total_positions:,} positions in {len(file_sizes)} files")
+
+        # Phase 2: Pre-allocate arrays (single allocation - very fast)
+        print("Allocating memory...")
+        # Get shape from first file
+        sample = np.load(os.path.join(path, files[0]))
+        board_shape = sample['boards'].shape[1:]  # (18, 8, 8)
+        policy_shape = sample['policies'].shape[1:]  # (1858,)
+        sample.close()
+
+        self.boards = np.zeros((total_positions, *board_shape), dtype=np.float32)
+        self.policies = np.zeros((total_positions, *policy_shape), dtype=np.float32)
+        self.values = np.zeros(total_positions, dtype=np.float32)
+
+        # Phase 3: Load data directly into pre-allocated arrays (fast copy)
+        print("Loading data...")
+        offset = 0
+        remaining = total_positions
+
+        for i, f in enumerate(tqdm(files[:len(file_sizes)], desc="Loading data files")):
+            if remaining <= 0:
+                break
+
+            data = np.load(os.path.join(path, f))
+            n = min(file_sizes[i], remaining)
+
+            # Direct copy into pre-allocated arrays (no Python list overhead)
+            self.boards[offset:offset + n] = data['boards'][:n]
+            self.policies[offset:offset + n] = data['policies'][:n]
+            self.values[offset:offset + n] = data['values'][:n]
+
+            data.close()
+            offset += n
+            remaining -= n
 
     def __len__(self) -> int:
         return len(self.boards)
