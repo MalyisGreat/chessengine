@@ -8,10 +8,11 @@ Handles loading pre-processed chess positions with:
 """
 
 import os
+import json
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional, List, Dict
 import chess
 import chess.pgn
 from tqdm import tqdm
@@ -67,47 +68,109 @@ class ChessDataset(Dataset):
             self.policies = self.policies[:max_positions]
             self.values = self.values[:max_positions]
 
+    def _load_metadata_cache(self, path: str) -> Optional[Dict]:
+        """Load cached file metadata if valid"""
+        cache_path = os.path.join(path, "_metadata.json")
+        if not os.path.exists(cache_path):
+            return None
+
+        try:
+            with open(cache_path, 'r') as f:
+                cache = json.load(f)
+
+            # Validate cache - check if files still exist with same mtime
+            for entry in cache.get('files', []):
+                file_path = os.path.join(path, entry['name'])
+                if not os.path.exists(file_path):
+                    return None  # File deleted
+                if os.path.getmtime(file_path) != entry['mtime']:
+                    return None  # File modified
+
+            return cache
+        except:
+            return None
+
+    def _save_metadata_cache(self, path: str, files_info: List[Dict]):
+        """Save file metadata to cache"""
+        cache_path = os.path.join(path, "_metadata.json")
+        cache = {
+            'files': files_info,
+            'board_shape': [18, 8, 8],
+            'policy_shape': [self.encoder.num_moves],
+        }
+        try:
+            with open(cache_path, 'w') as f:
+                json.dump(cache, f)
+        except:
+            pass  # Cache write failure is not critical
+
     def _load_directory_fast(self, path: str, max_positions: Optional[int] = None):
-        """Load all .npz files from a directory - FAST version with pre-allocation"""
+        """Load all .npz files from a directory - FAST version with caching"""
         files = sorted([f for f in os.listdir(path) if f.endswith('.npz')])
 
         if not files:
             raise ValueError(f"No .npz files found in {path}")
 
-        # Phase 1: Scan files to get total size, skip corrupted files
-        print("Scanning data files...")
-        valid_files = []
-        file_sizes = []
-        total_positions = 0
-        corrupted_files = []
+        # Try to load from cache first (instant!)
+        cache = self._load_metadata_cache(path)
 
-        for f in files:
-            file_path = os.path.join(path, f)
-            try:
-                data = np.load(file_path)
-                # Verify all arrays are readable
-                n = len(data['boards'])
-                _ = data['policies'].shape
-                _ = data['values'].shape
-                valid_files.append(f)
-                file_sizes.append(n)
-                total_positions += n
-                data.close()
+        if cache is not None:
+            print("Using cached metadata (instant load)...")
+            valid_files = [e['name'] for e in cache['files']]
+            file_sizes = [e['size'] for e in cache['files']]
+            total_positions = sum(file_sizes)
+            board_shape = tuple(cache.get('board_shape', [18, 8, 8]))
+            policy_shape = tuple(cache.get('policy_shape', [self.encoder.num_moves]))
+        else:
+            # Phase 1: Scan files to get total size, skip corrupted files
+            print("Scanning data files (first run, will be cached)...")
+            valid_files = []
+            file_sizes = []
+            total_positions = 0
+            corrupted_files = []
+            files_info = []
 
-                if max_positions and total_positions >= max_positions:
-                    break
-            except Exception as e:
-                corrupted_files.append((f, str(e)))
-                print(f"  Warning: Skipping corrupted file {f}: {e}")
-                continue
+            for f in tqdm(files, desc="Scanning files"):
+                file_path = os.path.join(path, f)
+                try:
+                    data = np.load(file_path)
+                    # Verify all arrays are readable
+                    n = len(data['boards'])
+                    _ = data['policies'].shape
+                    _ = data['values'].shape
+                    valid_files.append(f)
+                    file_sizes.append(n)
+                    total_positions += n
+                    files_info.append({
+                        'name': f,
+                        'size': n,
+                        'mtime': os.path.getmtime(file_path),
+                    })
+                    data.close()
 
-        if corrupted_files:
-            print(f"\nSkipped {len(corrupted_files)} corrupted files:")
-            for f, err in corrupted_files:
-                print(f"  - {f}")
+                    if max_positions and total_positions >= max_positions:
+                        break
+                except Exception as e:
+                    corrupted_files.append((f, str(e)))
+                    print(f"  Warning: Skipping corrupted file {f}: {e}")
+                    continue
 
-        if not valid_files:
-            raise ValueError(f"No valid .npz files found in {path}")
+            if corrupted_files:
+                print(f"\nSkipped {len(corrupted_files)} corrupted files:")
+                for f, err in corrupted_files:
+                    print(f"  - {f}")
+
+            if not valid_files:
+                raise ValueError(f"No valid .npz files found in {path}")
+
+            # Save cache for next run
+            self._save_metadata_cache(path, files_info)
+
+            # Get shapes from first file
+            sample = np.load(os.path.join(path, valid_files[0]))
+            board_shape = sample['boards'].shape[1:]
+            policy_shape = sample['policies'].shape[1:]
+            sample.close()
 
         if max_positions:
             total_positions = min(total_positions, max_positions)
@@ -116,12 +179,6 @@ class ChessDataset(Dataset):
 
         # Phase 2: Pre-allocate arrays (single allocation - very fast)
         print("Allocating memory...")
-        # Get shape from first valid file
-        sample = np.load(os.path.join(path, valid_files[0]))
-        board_shape = sample['boards'].shape[1:]  # (18, 8, 8)
-        policy_shape = sample['policies'].shape[1:]  # (1858,)
-        sample.close()
-
         self.boards = np.zeros((total_positions, *board_shape), dtype=np.float32)
         self.policies = np.zeros((total_positions, *policy_shape), dtype=np.float32)
         self.values = np.zeros(total_positions, dtype=np.float32)
