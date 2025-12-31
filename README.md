@@ -71,12 +71,60 @@ Conv 3x3, 256 filters
 
 **Superhuman = 2900+ ELO** (beats all humans)
 
+## Testing
+
+Run the comprehensive test suite before training to verify everything works:
+
+```bash
+# Quick tests (no GPU/Stockfish needed)
+python test_suite.py --quick
+
+# All tests including GPU
+python test_suite.py --all
+
+# Specific test categories
+python test_suite.py --gpu        # GPU tests only
+python test_suite.py --stockfish  # Stockfish integration tests
+```
+
+Tests cover:
+- Board encoding (18 planes, castling, en passant)
+- Neural network forward/backward passes
+- Data loading and batching
+- Search algorithm (alpha-beta, mate detection)
+- Model save/load roundtrips
+- GPU performance benchmarks
+
+## Benchmarking
+
+Benchmarking is **on-demand** (not automatic during training). After training:
+
+```bash
+# Quick ELO estimate (~5 min)
+python benchmark.py --model ./outputs/chess_engine_v1/checkpoint_best.pt --quick
+
+# Full benchmark suite (~30 min)
+python benchmark.py --model ./outputs/chess_engine_v1/checkpoint_best.pt --all
+
+# Specific tests
+python benchmark.py --model <path> --elo        # Stockfish matches for ELO
+python benchmark.py --model <path> --tactical   # Tactical puzzle suite
+python benchmark.py --model <path> --accuracy   # Policy accuracy test
+```
+
+| Test | What It Measures | Time |
+|------|------------------|------|
+| ELO Estimation | Games vs Stockfish at various levels | 10-30 min |
+| Tactical Suite | Puzzle solving accuracy | 5 min |
+| Policy Accuracy | Agreement with Stockfish best moves | 5 min |
+
 ## Project Structure
 
 ```
 chess_engine/
 ├── train.py              # Distributed training script
 ├── benchmark.py          # ELO estimation & testing
+├── test_suite.py         # Comprehensive test suite
 ├── download_data.py      # HuggingFace data downloader (FAST!)
 ├── config.py             # Hyperparameters
 ├── models/
