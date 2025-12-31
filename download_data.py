@@ -208,9 +208,17 @@ def download_lichess_evaluations(
 
     print(f"Converting to training format (optimized single-thread)...")
 
+    # Get actual policy size from encoder (must match model)
+    from data.encoder import BoardEncoder
+    encoder = BoardEncoder()
+    policy_size = encoder.num_moves
+    print(f"Policy size: {policy_size} (from encoder)")
+
     def save_chunk(boards_arr, values_arr, idx):
         """Save a chunk of data"""
-        policies = np.zeros((len(boards_arr), 1858), dtype=np.float32)
+        # NOTE: policies are zeros because this dataset has no move data
+        # Training will only work for value head, not policy head
+        policies = np.zeros((len(boards_arr), policy_size), dtype=np.float32)
         chunk_path = os.path.join(output_dir, f"chunk_{idx:06d}.npz")
         np.savez_compressed(chunk_path, boards=boards_arr, policies=policies, values=values_arr)
 

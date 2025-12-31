@@ -139,6 +139,11 @@ class Trainer:
         if self.is_main:
             self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Initialize encoder (needed for model size and evaluation)
+        self.encoder = BoardEncoder()
+        if self.is_main:
+            print(f"Encoder num_moves: {self.encoder.num_moves}")
+
         # Initialize components
         self._setup_model()
         self._setup_optimizer()
@@ -153,11 +158,12 @@ class Trainer:
 
     def _setup_model(self):
         """Initialize model"""
+        # Use encoder's actual num_moves for policy head size
         self.model = ChessNetwork(
             num_blocks=self.config.model.num_blocks,
             num_filters=self.config.model.num_filters,
             input_planes=self.config.model.input_planes,
-            num_moves=self.config.model.policy_output_size,
+            num_moves=self.encoder.num_moves,  # Use encoder's count, not config
             se_ratio=self.config.model.se_ratio,
         ).to(self.device)
 
@@ -490,7 +496,8 @@ class Trainer:
         model = self.model.module if hasattr(self.model, 'module') else self.model
         model.eval()
 
-        encoder = BoardEncoder()
+        # Use the same encoder as training (important for consistent move indices)
+        encoder = self.encoder
         wins = 0
         draws = 0
         total_moves = 0
