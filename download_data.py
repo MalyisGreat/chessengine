@@ -15,9 +15,69 @@ import sys
 import argparse
 import numpy as np
 from tqdm import tqdm
-from typing import List, Optional
-from concurrent.futures import ThreadPoolExecutor
+from typing import List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+from multiprocessing import cpu_count
 import shutil
+
+# Global chess import for multiprocessing workers
+import chess
+
+
+def _fen_to_tensor(fen: str) -> np.ndarray:
+    """Convert FEN string to 18x8x8 tensor (module-level for multiprocessing)"""
+    board = chess.Board(fen)
+    tensor = np.zeros((18, 8, 8), dtype=np.float32)
+
+    piece_to_plane = {
+        (chess.PAWN, chess.WHITE): 0, (chess.KNIGHT, chess.WHITE): 1,
+        (chess.BISHOP, chess.WHITE): 2, (chess.ROOK, chess.WHITE): 3,
+        (chess.QUEEN, chess.WHITE): 4, (chess.KING, chess.WHITE): 5,
+        (chess.PAWN, chess.BLACK): 6, (chess.KNIGHT, chess.BLACK): 7,
+        (chess.BISHOP, chess.BLACK): 8, (chess.ROOK, chess.BLACK): 9,
+        (chess.QUEEN, chess.BLACK): 10, (chess.KING, chess.BLACK): 11,
+    }
+
+    for sq in chess.SQUARES:
+        piece = board.piece_at(sq)
+        if piece:
+            plane = piece_to_plane[(piece.piece_type, piece.color)]
+            tensor[plane, sq // 8, sq % 8] = 1.0
+
+    if board.turn == chess.WHITE:
+        tensor[12, :, :] = 1.0
+    if board.has_kingside_castling_rights(chess.WHITE):
+        tensor[13, :, :] = 1.0
+    if board.has_queenside_castling_rights(chess.WHITE):
+        tensor[14, :, :] = 1.0
+    if board.has_kingside_castling_rights(chess.BLACK):
+        tensor[15, :, :] = 1.0
+    if board.has_queenside_castling_rights(chess.BLACK):
+        tensor[16, :, :] = 1.0
+    if board.ep_square is not None:
+        tensor[17, board.ep_square // 8, board.ep_square % 8] = 1.0
+
+    return tensor
+
+
+def _normalize_eval(cp: Optional[int], mate: Optional[int]) -> float:
+    """Convert centipawn/mate to [-1, 1] value"""
+    if mate is not None:
+        return 1.0 if mate > 0 else -1.0
+    elif cp is not None:
+        return float(np.tanh(cp / 1000.0))
+    return 0.0
+
+
+def _process_example(args: Tuple[str, Optional[int], Optional[int]]) -> Optional[Tuple[np.ndarray, float]]:
+    """Process a single example (for multiprocessing)"""
+    fen, cp, mate = args
+    try:
+        tensor = _fen_to_tensor(fen)
+        value = _normalize_eval(cp, mate)
+        return (tensor, value)
+    except Exception:
+        return None
 
 
 def download_lichess_evaluations(
@@ -75,134 +135,66 @@ def download_lichess_evaluations(
     ds = ds.take(num_positions)
     print(f"Streaming {num_positions:,} positions...\n")
 
-    def fen_to_tensor(fen: str) -> np.ndarray:
-        """Convert FEN string to 18x8x8 tensor
+    num_workers = cpu_count()
+    print(f"Converting to training format using {num_workers} CPU cores...")
 
-        Planes:
-        0-5: White pieces (P, N, B, R, Q, K)
-        6-11: Black pieces (p, n, b, r, q, k)
-        12: Side to move (all 1s if white to move)
-        13: White kingside castling
-        14: White queenside castling
-        15: Black kingside castling
-        16: Black queenside castling
-        17: En passant square
-        """
-        board = chess.Board(fen)
-        tensor = np.zeros((18, 8, 8), dtype=np.float32)
-
-        piece_to_plane = {
-            (chess.PAWN, chess.WHITE): 0,
-            (chess.KNIGHT, chess.WHITE): 1,
-            (chess.BISHOP, chess.WHITE): 2,
-            (chess.ROOK, chess.WHITE): 3,
-            (chess.QUEEN, chess.WHITE): 4,
-            (chess.KING, chess.WHITE): 5,
-            (chess.PAWN, chess.BLACK): 6,
-            (chess.KNIGHT, chess.BLACK): 7,
-            (chess.BISHOP, chess.BLACK): 8,
-            (chess.ROOK, chess.BLACK): 9,
-            (chess.QUEEN, chess.BLACK): 10,
-            (chess.KING, chess.BLACK): 11,
-        }
-
-        # Piece positions (planes 0-11)
-        for sq in chess.SQUARES:
-            piece = board.piece_at(sq)
-            if piece:
-                plane = piece_to_plane[(piece.piece_type, piece.color)]
-                rank = sq // 8
-                file = sq % 8
-                tensor[plane, rank, file] = 1.0
-
-        # Side to move (plane 12)
-        if board.turn == chess.WHITE:
-            tensor[12, :, :] = 1.0
-
-        # Castling rights (planes 13-16)
-        if board.has_kingside_castling_rights(chess.WHITE):
-            tensor[13, :, :] = 1.0
-        if board.has_queenside_castling_rights(chess.WHITE):
-            tensor[14, :, :] = 1.0
-        if board.has_kingside_castling_rights(chess.BLACK):
-            tensor[15, :, :] = 1.0
-        if board.has_queenside_castling_rights(chess.BLACK):
-            tensor[16, :, :] = 1.0
-
-        # En passant square (plane 17)
-        if board.ep_square is not None:
-            ep_rank = board.ep_square // 8
-            ep_file = board.ep_square % 8
-            tensor[17, ep_rank, ep_file] = 1.0
-
-        return tensor
-
-    def normalize_eval(cp: Optional[int], mate: Optional[int]) -> float:
-        """Convert centipawn/mate to [-1, 1] value"""
-        if mate is not None:
-            # Mate score: positive = white wins, negative = black wins
-            return 1.0 if mate > 0 else -1.0
-        elif cp is not None:
-            # Centipawn score: normalize with tanh
-            # cp=1000 (~10 pawns) -> ~0.76
-            # cp=300 (~3 pawns) -> ~0.29
-            return float(np.tanh(cp / 1000.0))
-        else:
-            return 0.0
-
-    print("Converting to training format...")
-
-    # Process streaming dataset in batches
+    # Process streaming dataset in batches with multiprocessing
     boards = []
     values = []
     chunk_idx = 0
-    total_processed = 0
+    pending_batch = []
 
     pbar = tqdm(total=num_positions, desc="Processing positions")
 
-    for example in ds:
-        try:
-            tensor = fen_to_tensor(example['fen'])
-            value = normalize_eval(example.get('cp'), example.get('mate'))
-            boards.append(tensor)
-            values.append(value)
-            total_processed += 1
-            pbar.update(1)
-        except Exception:
-            continue
+    def save_chunk(boards_list, values_list, idx):
+        """Save a chunk of data"""
+        boards_arr = np.array(boards_list, dtype=np.float32)
+        values_arr = np.array(values_list, dtype=np.float32)
+        policies = np.zeros((len(boards_arr), 1858), dtype=np.float32)
+        chunk_path = os.path.join(output_dir, f"chunk_{idx:06d}.npz")
+        np.savez_compressed(chunk_path, boards=boards_arr, policies=policies, values=values_arr)
 
-        # Save chunk when batch is full
-        if len(boards) >= batch_size:
-            boards_arr = np.array(boards, dtype=np.float32)
-            values_arr = np.array(values, dtype=np.float32)
-            policies = np.zeros((len(boards_arr), 1858), dtype=np.float32)
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        for example in ds:
+            pending_batch.append((example['fen'], example.get('cp'), example.get('mate')))
 
-            chunk_path = os.path.join(output_dir, f"chunk_{chunk_idx:06d}.npz")
-            np.savez_compressed(
-                chunk_path,
-                boards=boards_arr,
-                policies=policies,
-                values=values_arr,
-            )
-            chunk_idx += 1
-            boards = []
-            values = []
+            # Process in larger batches for efficiency
+            if len(pending_batch) >= 10000:
+                results = list(executor.map(_process_example, pending_batch, chunksize=500))
+                for result in results:
+                    if result is not None:
+                        boards.append(result[0])
+                        values.append(result[1])
+                pbar.update(len(pending_batch))
+                pending_batch = []
+
+                # Save chunk when batch is full
+                while len(boards) >= batch_size:
+                    save_chunk(boards[:batch_size], values[:batch_size], chunk_idx)
+                    boards = boards[batch_size:]
+                    values = values[batch_size:]
+                    chunk_idx += 1
+
+        # Process remaining batch
+        if pending_batch:
+            results = list(executor.map(_process_example, pending_batch, chunksize=500))
+            for result in results:
+                if result is not None:
+                    boards.append(result[0])
+                    values.append(result[1])
+            pbar.update(len(pending_batch))
 
     pbar.close()
 
     # Save remaining positions
-    if boards:
-        boards_arr = np.array(boards, dtype=np.float32)
-        values_arr = np.array(values, dtype=np.float32)
-        policies = np.zeros((len(boards_arr), 1858), dtype=np.float32)
+    while len(boards) >= batch_size:
+        save_chunk(boards[:batch_size], values[:batch_size], chunk_idx)
+        boards = boards[batch_size:]
+        values = values[batch_size:]
+        chunk_idx += 1
 
-        chunk_path = os.path.join(output_dir, f"chunk_{chunk_idx:06d}.npz")
-        np.savez_compressed(
-            chunk_path,
-            boards=boards_arr,
-            policies=policies,
-            values=values_arr,
-        )
+    if boards:
+        save_chunk(boards, values, chunk_idx)
         chunk_idx += 1
 
     # Count total positions saved
@@ -299,17 +291,34 @@ def download_lichess_pgn_parallel(
 
 
 def main():
+    # Preset configurations
+    PRESETS = {
+        "test": 2_000_000,      # Quick test run
+        "small": 10_000_000,    # 10M - good baseline
+        "medium": 50_000_000,   # 50M - strong performance
+        "large": 100_000_000,   # 100M - superhuman
+        "full": 200_000_000,    # 200M - maximum strength
+    }
+
     parser = argparse.ArgumentParser(
         description="Download chess training data",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python download_data.py                         # Download 10M positions (recommended)
-  python download_data.py --positions 50000000    # Download 50M positions
-  python download_data.py --dataset lichess_pgn   # Use old PGN method (slower)
+  python download_data.py --preset test           # 2M positions (quick test)
+  python download_data.py --preset small          # 10M positions (baseline)
+  python download_data.py --preset medium         # 50M positions (strong)
+  python download_data.py --preset large          # 100M positions (superhuman)
+  python download_data.py --positions 25000000    # Custom: 25M positions
         """
     )
 
+    parser.add_argument(
+        "--preset",
+        type=str,
+        choices=list(PRESETS.keys()),
+        help="Use a preset size: test(2M), small(10M), medium(50M), large(100M), full(200M)",
+    )
     parser.add_argument(
         "--dataset",
         type=str,
@@ -321,7 +330,7 @@ Examples:
         "--positions",
         type=int,
         default=10_000_000,
-        help="Number of positions to download (default: 10M)",
+        help="Number of positions to download (default: 10M, overridden by --preset)",
     )
     parser.add_argument(
         "--output",
@@ -337,6 +346,11 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    # Preset overrides --positions
+    if args.preset:
+        args.positions = PRESETS[args.preset]
+        print(f"Using preset '{args.preset}': {args.positions:,} positions")
 
     if args.dataset == "lichess_eval":
         # RECOMMENDED: Fast download from HuggingFace
