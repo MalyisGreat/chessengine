@@ -73,6 +73,7 @@ class ChessEngine:
         model = ChessNetwork(
             num_blocks=10,
             num_filters=256,
+            num_moves=self.encoder.num_moves,  # Use encoder's actual move count
         ).to(self.device)
 
         if model_path:

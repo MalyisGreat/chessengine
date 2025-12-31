@@ -40,7 +40,7 @@ class TrainingConfig:
 
     # Loss weights
     policy_weight: float = 1.0
-    value_weight: float = 1.0
+    value_weight: float = 4.0  # Increased to balance policy/value training
 
     # Regularization
     dropout: float = 0.0
