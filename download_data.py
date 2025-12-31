@@ -62,13 +62,18 @@ def download_lichess_evaluations(
     print("Connecting to Hugging Face...")
     split = f"train[:{num_positions}]"
 
-    print(f"Downloading {num_positions:,} positions (this may take a few minutes)...")
+    print(f"Downloading {num_positions:,} positions using streaming mode (FAST!)...")
+
+    # Use streaming to avoid loading entire 784M dataset
     ds = load_dataset(
         "Lichess/chess-position-evaluations",
-        split=split,
-        trust_remote_code=True,
+        split="train",
+        streaming=True,
     )
-    print(f"Downloaded {len(ds):,} positions\n")
+
+    # Take only what we need
+    ds = ds.take(num_positions)
+    print(f"Streaming {num_positions:,} positions...\n")
 
     def fen_to_tensor(fen: str) -> np.ndarray:
         """Convert FEN string to 18x8x8 tensor
@@ -147,44 +152,58 @@ def download_lichess_evaluations(
 
     print("Converting to training format...")
 
-    total_chunks = (len(ds) + batch_size - 1) // batch_size
+    # Process streaming dataset in batches
+    boards = []
+    values = []
+    chunk_idx = 0
+    total_processed = 0
 
-    for chunk_idx in tqdm(range(total_chunks), desc="Processing chunks"):
-        start = chunk_idx * batch_size
-        end = min(start + batch_size, len(ds))
+    pbar = tqdm(total=num_positions, desc="Processing positions")
 
-        batch = ds[start:end]
-
-        # Convert FENs to tensors
-        boards = []
-        values = []
-
-        for i in range(len(batch['fen'])):
-            try:
-                tensor = fen_to_tensor(batch['fen'][i])
-                value = normalize_eval(batch['cp'][i], batch['mate'][i])
-                boards.append(tensor)
-                values.append(value)
-            except Exception as e:
-                continue
-
-        if not boards:
+    for example in ds:
+        try:
+            tensor = fen_to_tensor(example['fen'])
+            value = normalize_eval(example.get('cp'), example.get('mate'))
+            boards.append(tensor)
+            values.append(value)
+            total_processed += 1
+            pbar.update(1)
+        except Exception:
             continue
 
-        boards = np.array(boards, dtype=np.float32)
-        values = np.array(values, dtype=np.float32)
+        # Save chunk when batch is full
+        if len(boards) >= batch_size:
+            boards_arr = np.array(boards, dtype=np.float32)
+            values_arr = np.array(values, dtype=np.float32)
+            policies = np.zeros((len(boards_arr), 1858), dtype=np.float32)
 
-        # Create dummy policy (we're doing value-only training)
-        policies = np.zeros((len(boards), 1858), dtype=np.float32)
+            chunk_path = os.path.join(output_dir, f"chunk_{chunk_idx:06d}.npz")
+            np.savez_compressed(
+                chunk_path,
+                boards=boards_arr,
+                policies=policies,
+                values=values_arr,
+            )
+            chunk_idx += 1
+            boards = []
+            values = []
 
-        # Save chunk
+    pbar.close()
+
+    # Save remaining positions
+    if boards:
+        boards_arr = np.array(boards, dtype=np.float32)
+        values_arr = np.array(values, dtype=np.float32)
+        policies = np.zeros((len(boards_arr), 1858), dtype=np.float32)
+
         chunk_path = os.path.join(output_dir, f"chunk_{chunk_idx:06d}.npz")
         np.savez_compressed(
             chunk_path,
-            boards=boards,
+            boards=boards_arr,
             policies=policies,
-            values=values,
+            values=values_arr,
         )
+        chunk_idx += 1
 
     # Count total positions saved
     total_positions = 0
@@ -198,7 +217,7 @@ def download_lichess_evaluations(
     print(f"{'='*60}")
     print(f"Total positions: {total_positions:,}")
     print(f"Saved to: {output_dir}")
-    print(f"Chunks: {total_chunks}")
+    print(f"Chunks: {chunk_idx}")
     print(f"{'='*60}\n")
 
     return output_dir
