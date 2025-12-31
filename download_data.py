@@ -455,6 +455,134 @@ def _split_pgn_into_games(pgn_content: str) -> List[str]:
     return games
 
 
+def _process_zip_file(args):
+    """
+    Process an entire zip file in a worker process.
+    Returns list of (boards, policies, values) arrays.
+
+    This runs in a separate process so it can be parallelized across zip files.
+    """
+    import zipfile
+    import numpy as np
+    import chess
+    import chess.pgn
+    import io
+    from data.encoder import BoardEncoder
+
+    zip_path, min_elo, games_per_batch = args
+    encoder = BoardEncoder()
+
+    all_results = []
+    total_games = 0
+
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            for name in zf.namelist():
+                if not name.endswith('.pgn'):
+                    continue
+
+                # Read PGN content
+                with zf.open(name) as pgn_bytes:
+                    pgn_content = pgn_bytes.read().decode('utf-8', errors='ignore')
+
+                # Split into games
+                games = []
+                current_game = []
+                in_moves = False
+
+                for line in pgn_content.split('\n'):
+                    if line.startswith('[Event '):
+                        if current_game:
+                            games.append('\n'.join(current_game))
+                            current_game = []
+                        in_moves = False
+                    current_game.append(line)
+
+                    if not line.startswith('[') and line.strip():
+                        in_moves = True
+                    if in_moves and ('1-0' in line or '0-1' in line or '1/2-1/2' in line or '*' in line):
+                        if current_game:
+                            games.append('\n'.join(current_game))
+                            current_game = []
+                        in_moves = False
+
+                if current_game:
+                    games.append('\n'.join(current_game))
+
+                del pgn_content
+
+                # Process all games in this PGN file
+                boards = []
+                policies = []
+                values = []
+
+                for game_text in games:
+                    try:
+                        pgn_io = io.StringIO(game_text)
+                        game = chess.pgn.read_game(pgn_io)
+                        if game is None:
+                            continue
+                    except:
+                        continue
+
+                    # Check ELO
+                    try:
+                        white_elo = int(game.headers.get('WhiteElo', '0'))
+                        black_elo = int(game.headers.get('BlackElo', '0'))
+                        if white_elo < min_elo or black_elo < min_elo:
+                            continue
+                    except ValueError:
+                        continue
+
+                    # Get result
+                    result = game.headers.get('Result', '*')
+                    if result == '1-0':
+                        white_value, black_value = 1.0, -1.0
+                    elif result == '0-1':
+                        white_value, black_value = -1.0, 1.0
+                    elif result == '1/2-1/2':
+                        white_value, black_value = 0.0, 0.0
+                    else:
+                        continue
+
+                    # Process positions
+                    board = game.board()
+                    moves_list = list(game.mainline_moves())
+
+                    for move in moves_list[:-1]:
+                        board_tensor = encoder.encode_board(board)
+
+                        policy = np.zeros(encoder.num_moves, dtype=np.float32)
+                        move_idx = encoder.encode_move(move)
+                        if move_idx >= 0:
+                            policy[move_idx] = 1.0
+                        else:
+                            board.push(move)
+                            continue
+
+                        value = white_value if board.turn == chess.WHITE else black_value
+
+                        boards.append(board_tensor)
+                        policies.append(policy)
+                        values.append(value)
+
+                        board.push(move)
+
+                    total_games += 1
+
+                if boards:
+                    all_results.append((
+                        np.array(boards, dtype=np.float32),
+                        np.array(policies, dtype=np.float32),
+                        np.array(values, dtype=np.float32),
+                    ))
+
+    except Exception as e:
+        return None, 0, str(e)
+
+    return all_results, total_games, None
+
+
 def download_lichess_games(
     output_dir: str = "./data/train",
     num_positions: int = 10_000_000,
@@ -466,10 +594,10 @@ def download_lichess_games(
     """
     Download Lichess Elite games with MOVES for policy training.
 
-    Uses PARALLEL processing for 4-8x speedup!
-
-    This extracts actual moves played, giving proper policy targets.
-    Uses game outcome as value target.
+    Uses FULLY PARALLEL processing:
+    - Downloads and processes zip files SIMULTANEOUSLY
+    - Multiple zip files processed in parallel
+    - Each zip processed by a dedicated worker
 
     Args:
         output_dir: Where to save processed data
@@ -482,13 +610,12 @@ def download_lichess_games(
     Returns:
         Path to output directory
     """
-    import chess
-    import chess.pgn
     import requests
     import zipfile
-    import io
     import multiprocessing as mp
     from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+    import threading
+    import queue
 
     from data.encoder import BoardEncoder
 
@@ -496,7 +623,7 @@ def download_lichess_games(
 
     # Auto-detect workers
     if num_workers == 0:
-        num_workers = min(mp.cpu_count(), 16)  # Cap at 16 to avoid overhead
+        num_workers = min(mp.cpu_count(), 16)
 
     # Setup RAM disk if requested
     ram_disk_path = None
@@ -511,12 +638,12 @@ def download_lichess_games(
             ram_disk_path = None
 
     print(f"\n{'='*60}")
-    print(f"DOWNLOADING LICHESS ELITE GAMES (WITH MOVES)")
+    print(f"DOWNLOADING LICHESS ELITE GAMES (FULLY PARALLEL)")
     print(f"{'='*60}")
     print(f"Target positions: {num_positions:,}")
     print(f"Min ELO: {min_elo}")
     print(f"Output: {output_dir}")
-    print(f"Parallel workers: {num_workers}")
+    print(f"Parallel zip processors: {min(num_workers, 4)}")
     if use_ram_disk:
         print(f"RAM disk: ENABLED ({ram_disk_path})")
     print(f"{'='*60}\n")
@@ -524,7 +651,7 @@ def download_lichess_games(
     encoder = BoardEncoder()
     print(f"Policy size: {encoder.num_moves} (from encoder)")
 
-    # Download Lichess Elite PGN files
+    # Lichess Elite PGN files
     LICHESS_ELITE_BASE = "https://database.nikonoel.fr/"
     MONTHLY_FILES = [
         "lichess_elite_2023-01.zip", "lichess_elite_2023-02.zip",
@@ -536,49 +663,46 @@ def download_lichess_games(
         "lichess_elite_2021-01.zip", "lichess_elite_2021-02.zip",
     ]
 
-    # Use RAM disk for temp files if enabled, otherwise use output_dir/raw
     raw_dir = ram_disk_path if use_ram_disk else os.path.join(output_dir, "raw")
     os.makedirs(raw_dir, exist_ok=True)
-    os.makedirs(output_dir, exist_ok=True)  # Ensure output dir exists for final .npz files
+
+    # Thread-safe queue for downloaded files ready to process
+    download_queue = queue.Queue()
+    download_done = threading.Event()
 
     # =========================================================================
-    # PHASE 1: Download all needed zip files in parallel
+    # THREAD 1: Download files and put in queue (overlaps with processing)
     # =========================================================================
-    def download_file(filename):
-        """Download a single zip file."""
-        zip_path = os.path.join(raw_dir, filename)
-        if os.path.exists(zip_path):
-            return zip_path, True
-        try:
-            url = f"{LICHESS_ELITE_BASE}{filename}"
-            response = requests.get(url, stream=True, timeout=120)
-            response.raise_for_status()
-            with open(zip_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=65536):
-                    if chunk:
-                        f.write(chunk)
-            return zip_path, True
-        except Exception as e:
-            print(f"  Failed to download {filename}: {e}")
-            return zip_path, False
+    def download_worker():
+        """Downloads files and queues them for processing."""
+        for filename in MONTHLY_FILES:
+            zip_path = os.path.join(raw_dir, filename)
 
-    print("Phase 1: Downloading zip files in parallel...")
-    downloaded_files = []
+            if not os.path.exists(zip_path):
+                try:
+                    url = f"{LICHESS_ELITE_BASE}{filename}"
+                    response = requests.get(url, stream=True, timeout=120)
+                    response.raise_for_status()
+                    with open(zip_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=65536):
+                            if chunk:
+                                f.write(chunk)
+                except Exception as e:
+                    print(f"  Failed to download {filename}: {e}")
+                    continue
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {executor.submit(download_file, f): f for f in MONTHLY_FILES}
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Downloading"):
-            zip_path, success = future.result()
-            if success:
-                downloaded_files.append(zip_path)
+            download_queue.put(zip_path)
 
-    print(f"  Downloaded {len(downloaded_files)} files\n")
+        download_done.set()
+
+    # Start download thread
+    download_thread = threading.Thread(target=download_worker, daemon=True)
+    download_thread.start()
+    print("Started download thread (downloading while processing)...")
 
     # =========================================================================
-    # PHASE 2: Extract and process games in parallel
+    # MAIN: Process zip files in parallel as they become available
     # =========================================================================
-    print("Phase 2: Extracting and processing games in parallel...")
-
     all_boards = []
     all_policies = []
     all_values = []
@@ -603,89 +727,94 @@ def download_lichess_games(
         all_values = []
 
     pbar = tqdm(total=num_positions, desc="Extracting positions")
-    games_per_batch = 100  # Games per worker batch
 
-    for zip_path in downloaded_files:
-        if total_positions >= num_positions:
-            break
+    # Process multiple zip files in parallel
+    num_zip_workers = min(num_workers, 4)  # Max 4 parallel zip processors
 
-        try:
-            with zipfile.ZipFile(zip_path, 'r') as zf:
-                for name in zf.namelist():
-                    if not name.endswith('.pgn'):
+    with ProcessPoolExecutor(max_workers=num_zip_workers) as executor:
+        pending_futures = {}
+        files_submitted = 0
+
+        while total_positions < num_positions:
+            # Submit new work as downloads complete
+            while not download_queue.empty() and len(pending_futures) < num_zip_workers:
+                try:
+                    zip_path = download_queue.get_nowait()
+                    future = executor.submit(_process_zip_file, (zip_path, min_elo, 100))
+                    pending_futures[future] = zip_path
+                    files_submitted += 1
+                except queue.Empty:
+                    break
+
+            # If no pending work and downloads are done, we're finished
+            if not pending_futures and download_done.is_set() and download_queue.empty():
+                break
+
+            # If nothing to do yet, wait a bit
+            if not pending_futures:
+                import time
+                time.sleep(0.1)
+                continue
+
+            # Wait for any result
+            done_futures = []
+            for future in list(pending_futures.keys()):
+                if future.done():
+                    done_futures.append(future)
+
+            if not done_futures:
+                import time
+                time.sleep(0.1)
+                continue
+
+            for future in done_futures:
+                zip_path = pending_futures.pop(future)
+
+                try:
+                    results, games_count, error = future.result()
+
+                    if error:
+                        print(f"  Error processing {zip_path}: {error}")
                         continue
 
-                    if total_positions >= num_positions:
-                        break
-
-                    # Read entire PGN file into memory
-                    with zf.open(name) as pgn_bytes:
-                        pgn_content = pgn_bytes.read().decode('utf-8', errors='ignore')
-
-                    # Split into individual games
-                    game_texts = _split_pgn_into_games(pgn_content)
-                    del pgn_content  # Free memory
-
-                    if not game_texts:
+                    if results is None:
                         continue
 
-                    # Create batches of games for parallel processing
-                    batches = []
-                    for i in range(0, len(game_texts), games_per_batch):
-                        batch = game_texts[i:i + games_per_batch]
-                        batches.append((batch, min_elo))
+                    total_games += games_count
 
-                    del game_texts  # Free memory
+                    for boards, policies, values in results:
+                        remaining = num_positions - total_positions
+                        if remaining <= 0:
+                            break
 
-                    # Process batches in parallel
-                    with ProcessPoolExecutor(max_workers=num_workers) as executor:
-                        futures = [executor.submit(_process_game_batch, batch) for batch in batches]
+                        if len(boards) > remaining:
+                            boards = boards[:remaining]
+                            policies = policies[:remaining]
+                            values = values[:remaining]
 
-                        for future in as_completed(futures):
-                            if total_positions >= num_positions:
-                                # Cancel remaining futures
-                                for f in futures:
-                                    f.cancel()
-                                break
+                        all_boards.append(boards)
+                        all_policies.append(policies)
+                        all_values.append(values)
+                        total_positions += len(boards)
+                        pbar.update(len(boards))
 
-                            result = future.result()
-                            if result is None:
-                                continue
+                        # Save chunk if needed
+                        current_size = sum(len(b) for b in all_boards)
+                        if current_size >= batch_size:
+                            save_chunk()
 
-                            boards, policies, values, games_count = result
-
-                            # Check how many positions we can actually use
-                            remaining = num_positions - total_positions
-                            if len(boards) > remaining:
-                                boards = boards[:remaining]
-                                policies = policies[:remaining]
-                                values = values[:remaining]
-
-                            all_boards.append(boards)
-                            all_policies.append(policies)
-                            all_values.append(values)
-                            total_positions += len(boards)
-                            total_games += games_count
-                            pbar.update(len(boards))
-
-                            # Save chunk if we have enough
-                            current_size = sum(len(b) for b in all_boards)
-                            if current_size >= batch_size:
-                                save_chunk()
-
-                            if total_positions >= num_positions:
-                                break
-
-        except Exception as e:
-            print(f"  Error processing {zip_path}: {e}")
-            continue
+                except Exception as e:
+                    print(f"  Exception processing {zip_path}: {e}")
 
     pbar.close()
+
+    # Wait for download thread
+    download_thread.join(timeout=5)
 
     # Save remaining
     save_chunk()
 
-    # Cleanup RAM disk if used
+    # Cleanup RAM disk
     if use_ram_disk and ram_disk_path and os.path.exists(ram_disk_path):
         print("Cleaning up RAM disk...")
         try:
