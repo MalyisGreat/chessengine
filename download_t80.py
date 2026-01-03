@@ -629,47 +629,15 @@ def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndar
             continue
 
         # Use soft policy targets (the key advantage of T80!)
-        # NOTE: Lc0 V6 stores policy as LOGITS (pre-softmax), not probabilities!
-        policy_logits = record['probabilities']
+        policy = record['probabilities']
 
-        # Debug: track why policies are rejected
-        if "debug_finite_fail" not in stats:
-            stats["debug_finite_fail"] = 0
-            stats["debug_sum_fail"] = 0
-            stats["debug_samples"] = []
-
-        # Check for valid logits
-        if not np.isfinite(policy_logits).all():
-            stats["debug_finite_fail"] += 1
-            if len(stats["debug_samples"]) < 3:
-                finite_mask = np.isfinite(policy_logits)
-                stats["debug_samples"].append({
-                    "type": "not_finite",
-                    "finite_count": int(np.sum(finite_mask)),
-                    "total": len(policy_logits),
-                    "min": float(np.nanmin(policy_logits)),
-                    "max": float(np.nanmax(policy_logits)),
-                    "has_nan": bool(np.isnan(policy_logits).any()),
-                    "has_inf": bool(np.isinf(policy_logits).any()),
-                })
+        if not np.isfinite(policy).all():
             stats["skipped_policy"] += 1
             continue
 
-        # Convert logits to probabilities using softmax
-        # Subtract max for numerical stability
-        policy_logits = policy_logits - np.max(policy_logits)
-        policy = np.exp(policy_logits)
-        policy_sum = np.sum(policy)
-
+        with np.errstate(invalid="ignore", over="ignore"):
+            policy_sum = float(np.sum(policy, dtype=np.float64))
         if not np.isfinite(policy_sum) or policy_sum <= 0:
-            stats["debug_sum_fail"] += 1
-            if len(stats["debug_samples"]) < 3:
-                stats["debug_samples"].append({
-                    "type": "sum_fail",
-                    "sum": float(policy_sum) if np.isfinite(policy_sum) else "inf/nan",
-                    "max_logit": float(np.max(policy_logits)),
-                    "min_logit": float(np.min(policy_logits)),
-                })
             stats["skipped_policy"] += 1
             continue
 
@@ -988,10 +956,6 @@ def download_and_process_t80(
                     tar_record_sizes = set()
                     tar_offsets = set()
 
-                    debug_finite_fail = 0
-                    debug_sum_fail = 0
-                    debug_samples = []
-
                     for boards, policies, values, stats in results:
                         if stats:
                             tar_total_records += stats.get("total_records", 0)
@@ -1000,10 +964,6 @@ def download_and_process_t80(
                             tar_skipped_board += stats.get("skipped_board", 0)
                             tar_skipped_policy += stats.get("skipped_policy", 0)
                             tar_nan_value += stats.get("nan_value", 0)
-                            debug_finite_fail += stats.get("debug_finite_fail", 0)
-                            debug_sum_fail += stats.get("debug_sum_fail", 0)
-                            if len(debug_samples) < 5:
-                                debug_samples.extend(stats.get("debug_samples", []))
                             if stats.get("version") is not None:
                                 tar_versions.add(stats.get("version"))
                             if stats.get("policy_size") is not None:
@@ -1035,11 +995,6 @@ def download_and_process_t80(
                         f"  Layout: v{layout_version}, policy={layout_policy}, "
                         f"record={layout_record}, offset={layout_offset}"
                     )
-                    # Debug output for policy failures
-                    if debug_finite_fail > 0 or debug_sum_fail > 0:
-                        print(f"  DEBUG: finite_fail={debug_finite_fail:,}, sum_fail={debug_sum_fail:,}")
-                        for sample in debug_samples[:3]:
-                            print(f"    Sample: {sample}")
                 finally:
                     # Clean up temp files
                     for tmp_path in temp_files:
@@ -1104,151 +1059,6 @@ def download_and_process_t80(
     print(f"Output directory: {output_dir}")
     print(f"\nTo train:")
     print(f"  python train.py --data {output_dir} --policy-size 1858")
-
-
-def process_local_tar(tar_path: str, output_dir: str, num_positions: Optional[int] = None, workers: int = 4):
-    """Process a local tar file directly without downloading."""
-    import tarfile
-    import tempfile
-    from concurrent.futures import ProcessPoolExecutor
-
-    if not os.path.exists(tar_path):
-        print(f"Error: {tar_path} does not exist")
-        return
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    print(f"\n{'='*60}")
-    print(f"PROCESSING LOCAL T80 TAR FILE")
-    print(f"{'='*60}")
-    print(f"Input: {tar_path}")
-    print(f"Output: {output_dir}")
-    print(f"Workers: {workers}")
-    print(f"{'='*60}\n")
-
-    all_boards = []
-    all_policies = []
-    all_values = []
-    total_positions = 0
-
-    filename = os.path.basename(tar_path)
-    print(f"Processing {filename}...")
-
-    try:
-        tar = tarfile.open(tar_path, 'r')
-        members = [m for m in tar.getmembers() if m.name.endswith('.gz')]
-        print(f"  Found {len(members)} chunk files in tar")
-
-        # Extract all chunks to temp files for parallel processing
-        temp_files = []
-        for member in members:
-            chunk_data = tar.extractfile(member).read()
-            tmp = tempfile.NamedTemporaryFile(suffix='.gz', delete=False)
-            tmp.write(chunk_data)
-            tmp.close()
-            temp_files.append(tmp.name)
-
-        tar.close()
-
-        # Process chunks in parallel
-        try:
-            with ProcessPoolExecutor(max_workers=workers) as executor:
-                results = list(tqdm(
-                    executor.map(process_chunk_file, temp_files),
-                    total=len(temp_files),
-                    desc="Processing chunks"
-                ))
-
-            tar_total_records = 0
-            tar_kept_records = 0
-            tar_skipped_record = 0
-            tar_skipped_board = 0
-            tar_skipped_policy = 0
-            tar_nan_value = 0
-            tar_versions = set()
-            tar_policy_sizes = set()
-            debug_finite_fail = 0
-            debug_sum_fail = 0
-            debug_samples = []
-
-            for boards, policies, values, stats in results:
-                if stats:
-                    tar_total_records += stats.get("total_records", 0)
-                    tar_kept_records += stats.get("kept", 0)
-                    tar_skipped_record += stats.get("skipped_record", 0)
-                    tar_skipped_board += stats.get("skipped_board", 0)
-                    tar_skipped_policy += stats.get("skipped_policy", 0)
-                    tar_nan_value += stats.get("nan_value", 0)
-                    debug_finite_fail += stats.get("debug_finite_fail", 0)
-                    debug_sum_fail += stats.get("debug_sum_fail", 0)
-                    if len(debug_samples) < 5:
-                        debug_samples.extend(stats.get("debug_samples", []))
-                    if stats.get("version") is not None:
-                        tar_versions.add(stats.get("version"))
-                    if stats.get("policy_size") is not None:
-                        tar_policy_sizes.add(stats.get("policy_size"))
-
-                if boards is not None:
-                    all_boards.append(boards)
-                    all_policies.append(policies)
-                    all_values.append(values)
-                    total_positions += len(boards)
-
-                if num_positions and total_positions >= num_positions:
-                    break
-
-            print(
-                f"  Records kept: {tar_kept_records:,}/{tar_total_records:,} "
-                f"(bad_record {tar_skipped_record:,}, bad_board {tar_skipped_board:,}, "
-                f"bad_policy {tar_skipped_policy:,}, bad_value {tar_nan_value:,})"
-            )
-            if debug_finite_fail > 0 or debug_sum_fail > 0:
-                print(f"  DEBUG: finite_fail={debug_finite_fail:,}, sum_fail={debug_sum_fail:,}")
-                for sample in debug_samples[:3]:
-                    print(f"    Sample: {sample}")
-
-        finally:
-            # Clean up temp files
-            for tmp_path in temp_files:
-                try:
-                    os.unlink(tmp_path)
-                except:
-                    pass
-
-    except Exception as e:
-        print(f"Error processing {filename}: {e}")
-        import traceback
-        traceback.print_exc()
-        return
-
-    # Save results
-    if not all_boards:
-        print("\nNo valid positions extracted!")
-        return
-
-    boards_arr = np.concatenate(all_boards)
-    policies_arr = np.concatenate(all_policies)
-    values_arr = np.concatenate(all_values)
-
-    if num_positions and len(boards_arr) > num_positions:
-        boards_arr = boards_arr[:num_positions]
-        policies_arr = policies_arr[:num_positions]
-        values_arr = values_arr[:num_positions]
-
-    chunk_path = os.path.join(output_dir, "chunk_000000.npz")
-    np.savez_compressed(
-        chunk_path,
-        boards=boards_arr,
-        policies=policies_arr,
-        values=values_arr,
-    )
-
-    print(f"\n{'='*60}")
-    print(f"PROCESSING COMPLETE")
-    print(f"{'='*60}")
-    print(f"Total positions: {len(boards_arr):,}")
-    print(f"Saved to: {chunk_path}")
-    print(f"{'='*60}\n")
 
 
 def verify_t80_dataset(data_dir: str):
@@ -1326,21 +1136,11 @@ Examples:
                         help="Keep downloaded .tar files")
     parser.add_argument("--verify", action="store_true",
                         help="Verify existing dataset")
-    parser.add_argument("--local-tar", type=str, default=None,
-                        help="Process a local .tar file instead of downloading")
 
     args = parser.parse_args()
 
     if args.verify:
         verify_t80_dataset(args.output)
-    elif args.local_tar:
-        # Process local tar file directly
-        process_local_tar(
-            tar_path=args.local_tar,
-            output_dir=args.output,
-            num_positions=args.positions,
-            workers=args.workers,
-        )
     else:
         download_and_process_t80(
             output_dir=args.output,
