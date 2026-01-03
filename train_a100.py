@@ -272,7 +272,7 @@ Examples:
             if stockfish_path:
                 run_command(
                     f"STOCKFISH_PATH={stockfish_path} {sys.executable} benchmark.py "
-                    f"--model {model_path} --quick",
+                    f"--model {model_path} --elo-test --num-games 20",
                     "Step 4/4: Benchmarking"
                 )
             else:

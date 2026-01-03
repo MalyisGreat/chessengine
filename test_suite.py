@@ -681,7 +681,7 @@ def run_tests(quick: bool = False, gpu: bool = False, stockfish: bool = False):
     print("=" * 60)
 
     if TESTS_FAILED > 0:
-        print("\n⚠️  Some tests failed! Check output above.")
+        print("\nWARNING: Some tests failed! Check output above.")
         sys.exit(1)
     else:
         print("\n✅ All tests passed!")
