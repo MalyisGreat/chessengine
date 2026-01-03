@@ -263,11 +263,50 @@ def _v6_record_size(policy_size: int) -> int:
     return policy_size * 4 + 832 + 92
 
 
+def _score_layout(data: bytes, version: int, policy_size: int,
+                  record_size: int, offset: int) -> int:
+    if len(data) < offset + record_size:
+        return 0
+    num_records = (len(data) - offset) // record_size
+    if num_records <= 0:
+        return 0
+
+    sample = min(50, num_records)
+    step = max(1, num_records // sample)
+    valid = 0
+    checked = 0
+
+    for i in range(0, num_records, step):
+        if checked >= sample:
+            break
+        start = offset + i * record_size
+        record_data = data[start:start + record_size]
+        if len(record_data) < record_size:
+            break
+        rec_version, input_format = struct.unpack_from('<II', record_data, 0)
+        if rec_version != version or input_format > 10:
+            checked += 1
+            continue
+        probs = np.frombuffer(record_data, dtype=np.float32, count=policy_size, offset=8)
+        if not np.isfinite(probs).all():
+            checked += 1
+            continue
+        with np.errstate(invalid="ignore", over="ignore"):
+            prob_sum = float(np.sum(probs, dtype=np.float64))
+        if not np.isfinite(prob_sum) or prob_sum <= 0:
+            checked += 1
+            continue
+        valid += 1
+        checked += 1
+
+    return valid
+
+
 def _detect_v6_layout(data: bytes) -> Tuple[int, int, int, int]:
     scan_limit = min(len(data), 4 * 1024 * 1024)
     scan = data[:scan_limit]
-    best = None
-    best_hits = 0
+    candidates = []
+
     for version in (V6_VERSION, 7):
         pattern = struct.pack('<I', version)
         indices = []
@@ -304,9 +343,32 @@ def _detect_v6_layout(data: bytes) -> Tuple[int, int, int, int]:
             if input_format > 10:
                 continue
         hits = min(record_hits, offset_hits)
-        if hits > best_hits:
+        candidates.append((hits, version, policy_size, record_size, offset))
+
+    for version in (V6_VERSION, 7):
+        for policy_size in (NUM_POLICY_MOVES, 1968):
+            record_size = _v6_record_size(policy_size)
+            candidates.append((0, version, policy_size, record_size, 0))
+
+    seen = set()
+    unique = []
+    for hits, version, policy_size, record_size, offset in candidates:
+        key = (version, policy_size, record_size, offset)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((hits, version, policy_size, record_size, offset))
+
+    best = None
+    best_score = -1
+    best_hits = -1
+    for hits, version, policy_size, record_size, offset in unique:
+        score = _score_layout(data, version, policy_size, record_size, offset)
+        if score > best_score or (score == best_score and hits > best_hits):
+            best_score = score
             best_hits = hits
             best = (version, policy_size, record_size, offset)
+
     if best:
         return best
     return V6_VERSION, NUM_POLICY_MOVES, _v6_record_size(NUM_POLICY_MOVES), 0
@@ -566,7 +628,7 @@ def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndar
             stats["skipped_policy"] += 1
             continue
         with np.errstate(invalid="ignore", over="ignore"):
-            policy_sum = float(np.sum(policy))
+            policy_sum = float(np.sum(policy, dtype=np.float64))
         if not np.isfinite(policy_sum) or policy_sum <= 0:
             stats["skipped_policy"] += 1
             continue  # Skip positions with no policy
