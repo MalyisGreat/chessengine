@@ -585,6 +585,8 @@ def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndar
         "skipped_policy": 0,
         "nan_value": 0,
         "kept": 0,
+        "policy_softmax": 0,
+        "policy_normalized": 0,
     }
     boards_list = []
     policies_list = []
@@ -630,18 +632,28 @@ def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndar
 
         # Use soft policy targets (the key advantage of T80!)
         policy = record['probabilities']
-
         if not np.isfinite(policy).all():
             stats["skipped_policy"] += 1
             continue
 
         with np.errstate(invalid="ignore", over="ignore"):
+            policy_min = float(np.min(policy))
             policy_sum = float(np.sum(policy, dtype=np.float64))
-        if not np.isfinite(policy_sum) or policy_sum <= 0:
-            stats["skipped_policy"] += 1
-            continue
 
-        policy = policy / policy_sum
+        # If policy has negatives or non-positive sum, treat as logits
+        if policy_min < 0 or not np.isfinite(policy_sum) or policy_sum <= 0:
+            with np.errstate(invalid="ignore", over="ignore"):
+                logits = policy - np.max(policy)
+                exp_vals = np.exp(logits)
+                exp_sum = float(np.sum(exp_vals, dtype=np.float64))
+            if not np.isfinite(exp_sum) or exp_sum <= 0:
+                stats["skipped_policy"] += 1
+                continue
+            policy = exp_vals / exp_sum
+            stats["policy_softmax"] += 1
+        else:
+            policy = policy / policy_sum
+            stats["policy_normalized"] += 1
 
         # Value from position evaluation (best_q) or game result
         # best_q is the MCTS-backed evaluation, result_q is game outcome
@@ -951,6 +963,8 @@ def download_and_process_t80(
                     tar_skipped_board = 0
                     tar_skipped_policy = 0
                     tar_nan_value = 0
+                    tar_policy_softmax = 0
+                    tar_policy_normalized = 0
                     tar_versions = set()
                     tar_policy_sizes = set()
                     tar_record_sizes = set()
@@ -964,6 +978,8 @@ def download_and_process_t80(
                             tar_skipped_board += stats.get("skipped_board", 0)
                             tar_skipped_policy += stats.get("skipped_policy", 0)
                             tar_nan_value += stats.get("nan_value", 0)
+                            tar_policy_softmax += stats.get("policy_softmax", 0)
+                            tar_policy_normalized += stats.get("policy_normalized", 0)
                             if stats.get("version") is not None:
                                 tar_versions.add(stats.get("version"))
                             if stats.get("policy_size") is not None:
@@ -990,6 +1006,10 @@ def download_and_process_t80(
                         f"  Records kept: {tar_kept_records:,}/{tar_total_records:,} "
                         f"(bad_record {tar_skipped_record:,}, bad_board {tar_skipped_board:,}, "
                         f"bad_policy {tar_skipped_policy:,}, bad_value {tar_nan_value:,})"
+                    )
+                    print(
+                        f"  Policy handling: softmax {tar_policy_softmax:,}, "
+                        f"normalized {tar_policy_normalized:,}"
                     )
                     print(
                         f"  Layout: v{layout_version}, policy={layout_policy}, "
