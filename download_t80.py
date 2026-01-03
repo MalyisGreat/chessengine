@@ -45,6 +45,8 @@ import time
 # Lc0 V6 format constants
 V6_VERSION = 6
 NUM_POLICY_MOVES = 1858  # Lc0's policy size
+MIN_POLICY_MOVES = 1800
+MAX_POLICY_MOVES = 2000
 
 # Lc0 move encoding - maps (from_sq, to_sq, promo) to Lc0 policy index
 # This is computed at module load time
@@ -261,31 +263,49 @@ def _v6_record_size(policy_size: int) -> int:
     return policy_size * 4 + 832 + 92
 
 
-def _detect_v6_layout(data: bytes) -> Tuple[int, int, int]:
-    candidates = [NUM_POLICY_MOVES, 1968]
-    max_offset = min(64, max(0, len(data) - 4))
-    for policy_size in candidates:
-        record_size = _v6_record_size(policy_size)
-        if len(data) < record_size:
+def _detect_v6_layout(data: bytes) -> Tuple[int, int, int, int]:
+    scan_limit = min(len(data), 4 * 1024 * 1024)
+    scan = data[:scan_limit]
+    for version in (V6_VERSION, 7):
+        pattern = struct.pack('<I', version)
+        indices = []
+        start = 0
+        while True:
+            idx = scan.find(pattern, start)
+            if idx == -1:
+                break
+            indices.append(idx)
+            start = idx + 1
+        if len(indices) < 2:
             continue
-        for offset in range(0, max_offset + 1, 4):
-            version, = struct.unpack_from('<I', data, offset)
-            if version != V6_VERSION:
+        diffs = [b - a for a, b in zip(indices, indices[1:]) if b - a > 1000]
+        if not diffs:
+            continue
+        diff_counts: Dict[int, int] = {}
+        for d in diffs:
+            diff_counts[d] = diff_counts.get(d, 0) + 1
+        record_size = max(diff_counts.items(), key=lambda kv: kv[1])[0]
+        if record_size <= 0:
+            continue
+        mod_counts: Dict[int, int] = {}
+        for idx in indices:
+            mod = idx % record_size
+            mod_counts[mod] = mod_counts.get(mod, 0) + 1
+        offset = max(mod_counts.items(), key=lambda kv: kv[1])[0]
+        if record_size <= 924 or (record_size - 924) % 4 != 0:
+            continue
+        policy_size = (record_size - 924) // 4
+        if not (MIN_POLICY_MOVES <= policy_size <= MAX_POLICY_MOVES):
+            continue
+        if offset + 8 <= scan_limit:
+            input_format, = struct.unpack_from('<I', scan, offset + 4)
+            if input_format > 10:
                 continue
-            num_records = (len(data) - offset) // record_size
-            if num_records <= 0:
-                continue
-            sample = min(5, num_records)
-            ok = 0
-            for i in range(sample):
-                if struct.unpack_from('<I', data, offset + i * record_size)[0] == V6_VERSION:
-                    ok += 1
-            if ok == sample:
-                return policy_size, record_size, offset
-    return NUM_POLICY_MOVES, _v6_record_size(NUM_POLICY_MOVES), 0
+        return version, policy_size, record_size, offset
+    return V6_VERSION, NUM_POLICY_MOVES, _v6_record_size(NUM_POLICY_MOVES), 0
 
 
-def parse_v6_record(data: bytes, policy_size: int) -> Optional[dict]:
+def parse_v6_record(data: bytes, policy_size: int, expected_version: int) -> Optional[dict]:
     """
     Parse a single V6 training record (8356 bytes).
 
@@ -308,7 +328,7 @@ def parse_v6_record(data: bytes, policy_size: int) -> Optional[dict]:
     version, input_format = struct.unpack_from('<II', data, offset)
     offset += 8
 
-    if version != V6_VERSION:
+    if version != expected_version:
         return None
 
     # Probabilities: 1858 floats (7432 bytes)
@@ -483,7 +503,7 @@ def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndar
     with gzip.open(chunk_path, 'rb') as f:
         data = f.read()
 
-    policy_size, record_size, offset = _detect_v6_layout(data)
+    version, policy_size, record_size, offset = _detect_v6_layout(data)
     num_records = (len(data) - offset) // record_size
 
     if num_records <= 0:
@@ -492,7 +512,7 @@ def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndar
     for i in range(num_records):
         start = offset + i * record_size
         record_data = data[start:start + record_size]
-        record = parse_v6_record(record_data, policy_size)
+        record = parse_v6_record(record_data, policy_size, version)
 
         if record is None:
             continue
