@@ -287,11 +287,14 @@ def _score_layout(data: bytes, version: int, policy_size: int,
         if rec_version != version or input_format > 10:
             checked += 1
             continue
-        probs = np.frombuffer(record_data, dtype=np.float32, count=policy_size, offset=8)
-        if not np.isfinite(probs).all():
+        logits = np.frombuffer(record_data, dtype=np.float32, count=policy_size, offset=8)
+        if not np.isfinite(logits).all():
             checked += 1
             continue
+        # Lc0 stores logits, not probabilities - apply softmax to validate
         with np.errstate(invalid="ignore", over="ignore"):
+            logits_shifted = logits - np.max(logits)
+            probs = np.exp(logits_shifted)
             prob_sum = float(np.sum(probs, dtype=np.float64))
         if not np.isfinite(prob_sum) or prob_sum <= 0:
             checked += 1
@@ -621,17 +624,24 @@ def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndar
             continue
 
         # Use soft policy targets (the key advantage of T80!)
-        policy = record['probabilities']
+        # NOTE: Lc0 V6 stores policy as LOGITS (pre-softmax), not probabilities!
+        policy_logits = record['probabilities']
 
-        # Normalize policy to sum to 1
-        if not np.isfinite(policy).all():
+        # Check for valid logits
+        if not np.isfinite(policy_logits).all():
             stats["skipped_policy"] += 1
             continue
-        with np.errstate(invalid="ignore", over="ignore"):
-            policy_sum = float(np.sum(policy, dtype=np.float64))
+
+        # Convert logits to probabilities using softmax
+        # Subtract max for numerical stability
+        policy_logits = policy_logits - np.max(policy_logits)
+        policy = np.exp(policy_logits)
+        policy_sum = np.sum(policy)
+
         if not np.isfinite(policy_sum) or policy_sum <= 0:
             stats["skipped_policy"] += 1
-            continue  # Skip positions with no policy
+            continue
+
         policy = policy / policy_sum
 
         # Value from position evaluation (best_q) or game result
