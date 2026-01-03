@@ -45,6 +45,8 @@ class ChessEngine:
         device: str = "cuda",
         search_depth: int = 4,
         use_search: bool = True,
+        use_quiescence: bool = True,
+        max_quiescence_depth: int = 6,
     ):
         """
         Args:
@@ -56,6 +58,8 @@ class ChessEngine:
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.search_depth = search_depth
         self.use_search = use_search
+        self.use_quiescence = use_quiescence
+        self.max_quiescence_depth = max_quiescence_depth
         self.nodes_searched = 0
 
         # Initialize encoder
@@ -67,6 +71,23 @@ class ChessEngine:
         # Transposition table for search
         self.tt = {}
         self.tt_hits = 0
+
+        # Piece values for move ordering (MVV/LVA-style)
+        self.piece_values = {
+            chess.PAWN: 1,
+            chess.KNIGHT: 3,
+            chess.BISHOP: 3,
+            chess.ROOK: 5,
+            chess.QUEEN: 9,
+            chess.KING: 0,
+        }
+
+    def _tt_key(self, board: chess.Board):
+        """Get a fast transposition table key."""
+        try:
+            return board._transposition_key()
+        except Exception:
+            return board.fen()
 
     def _load_model(self, model_path: Optional[str]) -> ChessNetwork:
         """Load trained model"""
@@ -183,12 +204,12 @@ class ChessEngine:
 
         # Iterative deepening
         for current_depth in range(1, depth + 1):
-            score, move, line = self._alpha_beta(
+            score, move, line = self._negamax(
                 board,
                 current_depth,
                 -float('inf'),
                 float('inf'),
-                True,  # Maximizing
+                0,
             )
 
             if move is not None:
@@ -211,72 +232,160 @@ class ChessEngine:
             time_ms=elapsed,
         )
 
-    def _alpha_beta(
+    def _terminal_score(self, board: chess.Board) -> float:
+        """Return terminal score from side-to-move perspective."""
+        mate_score = 2.0
+        result = board.result()
+        if result == "1/2-1/2":
+            return 0.0
+
+        white_won = result == "1-0"
+        side_to_move_is_white = board.turn
+        return mate_score if white_won == side_to_move_is_white else -mate_score
+
+    def _capture_order_bonus(self, board: chess.Board, move: chess.Move) -> float:
+        """Small MVV-style bonus for captures."""
+        if not board.is_capture(move):
+            return 0.0
+
+        if board.is_en_passant(move):
+            captured_value = self.piece_values[chess.PAWN]
+        else:
+            captured_piece = board.piece_at(move.to_square)
+            captured_value = self.piece_values.get(captured_piece.piece_type, 0) if captured_piece else 0
+
+        return captured_value * 0.05
+
+    def _order_moves(
+        self,
+        board: chess.Board,
+        policy_probs: Optional[np.ndarray] = None,
+        tt_move: Optional[chess.Move] = None,
+        captures_only: bool = False,
+    ) -> List[chess.Move]:
+        """Order moves using policy + simple tactical heuristics."""
+        moves = list(board.legal_moves)
+        if captures_only:
+            moves = [m for m in moves if board.is_capture(m) or m.promotion]
+            if not moves:
+                return moves
+
+        scored_moves = []
+        for move in moves:
+            score = 0.0
+            if tt_move is not None and move == tt_move:
+                score += 1.0
+
+            if policy_probs is not None:
+                move_idx = self.encoder.encode_move(move)
+                if move_idx >= 0:
+                    score += float(policy_probs[move_idx])
+
+            if board.is_capture(move):
+                score += 0.15 + self._capture_order_bonus(board, move)
+
+            if move.promotion:
+                score += 0.2
+
+            if board.gives_check(move):
+                score += 0.05
+
+            scored_moves.append((score, move))
+
+        scored_moves.sort(key=lambda x: x[0], reverse=True)
+        return [move for _, move in scored_moves]
+
+    def _quiescence(
+        self,
+        board: chess.Board,
+        alpha: float,
+        beta: float,
+        ply: int,
+        stand_pat: Optional[float] = None,
+    ) -> float:
+        """Quiescence search to resolve tactical captures at leaves."""
+        self.nodes_searched += 1
+
+        if stand_pat is None:
+            _, stand_pat = self.evaluate(board)
+
+        if stand_pat >= beta:
+            return beta
+        if stand_pat > alpha:
+            alpha = stand_pat
+
+        if ply >= self.max_quiescence_depth:
+            return alpha
+
+        for move in self._order_moves(board, captures_only=True):
+            board.push(move)
+            score = -self._quiescence(board, -beta, -alpha, ply + 1)
+            board.pop()
+
+            if score >= beta:
+                return beta
+            if score > alpha:
+                alpha = score
+
+        return alpha
+
+    def _negamax(
         self,
         board: chess.Board,
         depth: int,
         alpha: float,
         beta: float,
-        maximizing: bool,
+        ply: int,
     ) -> Tuple[float, Optional[chess.Move], List[chess.Move]]:
-        """
-        Alpha-beta search with neural network evaluation
-
-        Returns:
-            Tuple of (score, best_move, principal_variation)
-        """
+        """Negamax alpha-beta search with neural network evaluation."""
         self.nodes_searched += 1
 
         # Check for game over
         if board.is_game_over():
-            result = board.result()
-            if result == "1-0":
-                return (1.0 if maximizing else -1.0, None, [])
-            elif result == "0-1":
-                return (-1.0 if maximizing else 1.0, None, [])
-            else:
-                return (0.0, None, [])
-
-        # Leaf node - use neural network evaluation
-        if depth == 0:
-            _, value = self.evaluate(board)
-            # Value is from current player's perspective
-            if not board.turn:  # Black to move
-                value = -value
-            return (value, None, [])
+            return (self._terminal_score(board), None, [])
 
         # Transposition table lookup
-        board_hash = board.fen()
-        if board_hash in self.tt:
-            tt_entry = self.tt[board_hash]
-            if tt_entry['depth'] >= depth:
-                self.tt_hits += 1
-                return (tt_entry['score'], tt_entry['move'], tt_entry['pv'])
+        board_hash = self._tt_key(board)
+        tt_entry = self.tt.get(board_hash)
+        tt_move = tt_entry.get('move') if tt_entry else None
+        if tt_entry and tt_entry['depth'] >= depth:
+            self.tt_hits += 1
+            return (tt_entry['score'], tt_entry['move'], tt_entry['pv'])
 
-        # Get move ordering from policy network
-        move_probs = self.get_move_probs(board)
+        policy_probs, value = self.evaluate(board)
+
+        # Quiescence at leaf nodes; extend if in check
+        if depth == 0:
+            if self.use_quiescence and not board.is_check():
+                return (self._quiescence(board, alpha, beta, ply, stand_pat=value), None, [])
+            if self.use_quiescence and board.is_check():
+                depth = 1
+            else:
+                return (value, None, [])
 
         best_move = None
         best_pv = []
+        max_score = -float('inf')
 
-        if maximizing:
-            max_score = -float('inf')
+        moves = self._order_moves(board, policy_probs=policy_probs, tt_move=tt_move)
 
-            for move, _ in move_probs:
-                board.push(move)
-                score, _, child_pv = self._alpha_beta(board, depth - 1, alpha, beta, False)
-                board.pop()
+        for move in moves:
+            board.push(move)
+            score, _, child_pv = self._negamax(board, depth - 1, -beta, -alpha, ply + 1)
+            score = -score
+            board.pop()
 
-                if score > max_score:
-                    max_score = score
-                    best_move = move
-                    best_pv = [move] + child_pv
+            if score > max_score:
+                max_score = score
+                best_move = move
+                best_pv = [move] + child_pv
 
-                alpha = max(alpha, score)
-                if beta <= alpha:
-                    break  # Beta cutoff
+            if score > alpha:
+                alpha = score
+            if alpha >= beta:
+                break  # Beta cutoff
 
-            # Store in transposition table
+        if best_move is not None:
             self.tt[board_hash] = {
                 'score': max_score,
                 'move': best_move,
@@ -284,34 +393,7 @@ class ChessEngine:
                 'depth': depth,
             }
 
-            return (max_score, best_move, best_pv)
-
-        else:
-            min_score = float('inf')
-
-            for move, _ in move_probs:
-                board.push(move)
-                score, _, child_pv = self._alpha_beta(board, depth - 1, alpha, beta, True)
-                board.pop()
-
-                if score < min_score:
-                    min_score = score
-                    best_move = move
-                    best_pv = [move] + child_pv
-
-                beta = min(beta, score)
-                if beta <= alpha:
-                    break  # Alpha cutoff
-
-            # Store in transposition table
-            self.tt[board_hash] = {
-                'score': min_score,
-                'move': best_move,
-                'pv': best_pv,
-                'depth': depth,
-            }
-
-            return (min_score, best_move, best_pv)
+        return (max_score, best_move, best_pv)
 
     def play_game(
         self,

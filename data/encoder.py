@@ -102,6 +102,25 @@ class BoardEncoder:
                                 idx += 1
 
         self.num_moves = idx
+        self._init_flip_move_map()
+
+    @staticmethod
+    def _flip_square(square: int) -> int:
+        """Flip square horizontally (a-file <-> h-file)."""
+        rank = square // 8
+        file = square % 8
+        return rank * 8 + (7 - file)
+
+    def _init_flip_move_map(self):
+        """Precompute move index mapping for horizontal flips."""
+        self.flip_move_idx = np.zeros(self.num_moves, dtype=np.int32)
+        for idx, move_key in self.idx_to_move.items():
+            from_sq, to_sq, promotion = move_key
+            flip_from = self._flip_square(from_sq)
+            flip_to = self._flip_square(to_sq)
+            flip_key = (flip_from, flip_to, promotion)
+            flip_idx = self.move_to_idx.get(flip_key, -1)
+            self.flip_move_idx[idx] = flip_idx if flip_idx >= 0 else idx
 
     def encode_board(self, board: chess.Board) -> np.ndarray:
         """
@@ -204,6 +223,20 @@ class BoardEncoder:
         if move_idx >= 0:
             policy[move_idx] = 1.0
         return policy
+
+    def flip_policy(self, policy: np.ndarray) -> np.ndarray:
+        """
+        Flip a policy vector horizontally to match flip_board.
+
+        Args:
+            policy: Policy vector of shape (num_moves,)
+
+        Returns:
+            Flipped policy vector
+        """
+        if policy.shape[0] != self.num_moves:
+            return policy
+        return policy[self.flip_move_idx]
 
     def get_legal_move_mask(self, board: chess.Board) -> np.ndarray:
         """

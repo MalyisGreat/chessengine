@@ -83,7 +83,7 @@ class PolicyHead(nn.Module):
     def __init__(
         self,
         in_channels: int,
-        num_moves: int = 1858,
+        num_moves: int = 1968,
     ):
         super().__init__()
 
@@ -141,7 +141,7 @@ class ChessNetwork(nn.Module):
         num_blocks: int = 10,
         num_filters: int = 256,
         input_planes: int = 18,
-        num_moves: int = 1858,
+        num_moves: int = 1968,
         se_ratio: int = 8,
     ):
         """

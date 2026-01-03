@@ -18,6 +18,9 @@ import traceback
 from typing import Tuple, List, Optional
 
 import numpy as np
+from data.encoder import BoardEncoder
+
+NUM_MOVES = BoardEncoder().num_moves
 
 # Test results tracking
 TESTS_RUN = 0
@@ -164,7 +167,7 @@ def test_move_encoding():
         assert decoded == move, f"Decoded {decoded} != original {move}"
 
     print(f"  - Tested {len(test_moves)} move encodings")
-    print("  - All indices in valid range [0, 1858)")
+    print(f"  - All indices in valid range [0, {NUM_MOVES})")
     print("  - Encode/decode roundtrip successful")
 
 
@@ -178,7 +181,7 @@ def test_network_forward_cpu():
     import torch
     from models.network import ChessNetwork
 
-    model = ChessNetwork(num_blocks=2, num_filters=64)  # Small for testing
+    model = ChessNetwork(num_blocks=2, num_filters=64, num_moves=NUM_MOVES)  # Small for testing
     model.eval()
 
     batch_size = 4
@@ -187,7 +190,7 @@ def test_network_forward_cpu():
     with torch.no_grad():
         policy, value = model(x)
 
-    assert policy.shape == (batch_size, 1858), f"Policy shape wrong: {policy.shape}"
+    assert policy.shape == (batch_size, NUM_MOVES), f"Policy shape wrong: {policy.shape}"
     assert value.shape == (batch_size,), f"Value shape wrong: {value.shape}"
 
     # Value should be in [-1, 1] due to tanh
@@ -206,7 +209,7 @@ def test_network_loss():
     import torch
     from models.network import ChessNetwork, ChessLoss
 
-    model = ChessNetwork(num_blocks=2, num_filters=64)
+    model = ChessNetwork(num_blocks=2, num_filters=64, num_moves=NUM_MOVES)
     loss_fn = ChessLoss()
 
     batch_size = 4
@@ -215,7 +218,7 @@ def test_network_loss():
     policy, value = model(x)
 
     # Create targets
-    policy_target = torch.zeros(batch_size, 1858)
+    policy_target = torch.zeros(batch_size, NUM_MOVES)
     policy_target[:, 0] = 1  # One-hot
     value_target = torch.tensor([1.0, -1.0, 0.0, 0.5])
 
@@ -235,12 +238,12 @@ def test_network_gradients():
     import torch
     from models.network import ChessNetwork, ChessLoss
 
-    model = ChessNetwork(num_blocks=2, num_filters=64)
+    model = ChessNetwork(num_blocks=2, num_filters=64, num_moves=NUM_MOVES)
     loss_fn = ChessLoss()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
     x = torch.randn(2, 18, 8, 8)
-    policy_target = torch.zeros(2, 1858)
+    policy_target = torch.zeros(2, NUM_MOVES)
     policy_target[0, 100] = 1
     policy_target[1, 200] = 1
     value_target = torch.tensor([0.5, -0.5])
@@ -281,7 +284,7 @@ def test_dataset_loading():
     try:
         # Create fake NPZ file
         boards = np.random.randn(100, 18, 8, 8).astype(np.float32)
-        policies = np.zeros((100, 1858), dtype=np.float32)
+        policies = np.zeros((100, NUM_MOVES), dtype=np.float32)
         policies[:, 0] = 1
         values = np.random.uniform(-1, 1, 100).astype(np.float32)
 
@@ -300,7 +303,7 @@ def test_dataset_loading():
         # Test getitem
         board, policy, value = dataset[0]
         assert board.shape == (18, 8, 8), f"Board shape wrong: {board.shape}"
-        assert policy.shape == (1858,), f"Policy shape wrong: {policy.shape}"
+        assert policy.shape == (NUM_MOVES,), f"Policy shape wrong: {policy.shape}"
 
         print(f"  - Loaded {len(dataset)} samples")
         print(f"  - Board shape: {board.shape}")
@@ -323,7 +326,7 @@ def test_dataloader():
     try:
         # Create test data
         boards = np.random.randn(100, 18, 8, 8).astype(np.float32)
-        policies = np.zeros((100, 1858), dtype=np.float32)
+        policies = np.zeros((100, NUM_MOVES), dtype=np.float32)
         values = np.random.uniform(-1, 1, 100).astype(np.float32)
 
         np.savez(os.path.join(temp_dir, "test.npz"),
@@ -336,7 +339,7 @@ def test_dataloader():
         boards_batch, policies_batch, values_batch = batch
 
         assert boards_batch.shape == (16, 18, 8, 8)
-        assert policies_batch.shape == (16, 1858)
+        assert policies_batch.shape == (16, NUM_MOVES)
         assert values_batch.shape == (16,)
 
         print(f"  - Batch size: 16")
@@ -452,7 +455,7 @@ def test_gpu_forward():
         print("  - Skipping (no CUDA)")
         return
 
-    model = ChessNetwork(num_blocks=10, num_filters=256).cuda()
+    model = ChessNetwork(num_blocks=10, num_filters=256, num_moves=NUM_MOVES).cuda()
 
     # Large batch to test memory
     batch_size = 1024
@@ -489,7 +492,7 @@ def test_gpu_mixed_precision():
         print("  - Skipping (no CUDA)")
         return
 
-    model = ChessNetwork(num_blocks=10, num_filters=256).cuda()
+    model = ChessNetwork(num_blocks=10, num_filters=256, num_moves=NUM_MOVES).cuda()
     x = torch.randn(512, 18, 8, 8).cuda()
 
     # Test with autocast
@@ -549,15 +552,15 @@ def test_training_step():
     from models.network import ChessNetwork, ChessLoss
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = ChessNetwork(num_blocks=2, num_filters=64).to(device)
+    model = ChessNetwork(num_blocks=2, num_filters=64, num_moves=NUM_MOVES).to(device)
     loss_fn = ChessLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
 
     # Fake batch
     batch_size = 32
     boards = torch.randn(batch_size, 18, 8, 8).to(device)
-    policies = torch.zeros(batch_size, 1858).to(device)
-    policies[:, torch.randint(0, 1858, (batch_size,))] = 1
+    policies = torch.zeros(batch_size, NUM_MOVES).to(device)
+    policies[:, torch.randint(0, NUM_MOVES, (batch_size,))] = 1
     values = torch.rand(batch_size).to(device) * 2 - 1
 
     # Training step
@@ -583,7 +586,7 @@ def test_model_save_load():
     from models.network import ChessNetwork
     import tempfile
 
-    model = ChessNetwork(num_blocks=2, num_filters=64)
+    model = ChessNetwork(num_blocks=2, num_filters=64, num_moves=NUM_MOVES)
 
     # Save
     temp_file = tempfile.NamedTemporaryFile(suffix='.pt', delete=False)
@@ -601,7 +604,8 @@ def test_model_save_load():
         loaded = torch.load(temp_file.name, weights_only=False)
         new_model = ChessNetwork(
             num_blocks=loaded['num_blocks'],
-            num_filters=loaded['num_filters']
+            num_filters=loaded['num_filters'],
+            num_moves=NUM_MOVES,
         )
         new_model.load_state_dict(loaded['model_state_dict'])
 
@@ -684,7 +688,7 @@ def run_tests(quick: bool = False, gpu: bool = False, stockfish: bool = False):
         print("\nWARNING: Some tests failed! Check output above.")
         sys.exit(1)
     else:
-        print("\n✅ All tests passed!")
+        print("\nAll tests passed!")
         sys.exit(0)
 
 

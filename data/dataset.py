@@ -229,10 +229,10 @@ class ChessDataset(Dataset):
         policy = self.policies[idx]
         value = self.values[idx]
 
-        # Data augmentation: random horizontal flip
+        # Data augmentation: random horizontal flip (board + policy)
         if self.augment and np.random.random() > 0.5:
             board = self.encoder.flip_board(board)
-            # Note: policy would also need to be flipped (complex, skipping for now)
+            policy = self.encoder.flip_policy(policy)
 
         return (
             torch.from_numpy(board),
