@@ -33,7 +33,7 @@ import argparse
 import requests
 import numpy as np
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from typing import List, Tuple, Optional
 import multiprocessing as mp
 from io import BytesIO
@@ -410,6 +410,31 @@ def list_t80_files(base_url: str = "https://storage.lczero.org/files/training_da
         return []
 
 
+def download_single_file(args):
+    """Download a single file - for parallel downloading"""
+    url, tar_path, file_idx, total_files = args
+    filename = os.path.basename(tar_path)
+
+    if os.path.exists(tar_path):
+        return tar_path, True, f"[{file_idx+1}/{total_files}] {filename} (cached)"
+
+    try:
+        response = requests.get(url, stream=True, timeout=60)
+        response.raise_for_status()
+
+        total_size = int(response.headers.get('content-length', 0))
+
+        with open(tar_path, 'wb') as f:
+            downloaded = 0
+            for chunk in response.iter_content(chunk_size=65536):
+                f.write(chunk)
+                downloaded += len(chunk)
+
+        return tar_path, True, f"[{file_idx+1}/{total_files}] {filename} ({total_size/1e6:.1f}MB)"
+    except Exception as e:
+        return tar_path, False, f"[{file_idx+1}/{total_files}] {filename} FAILED: {e}"
+
+
 def download_and_process_t80(
     output_dir: str = "./data/t80",
     num_files: int = 10,
@@ -426,7 +451,7 @@ def download_and_process_t80(
         num_files: Number of .tar files to download
         num_positions: Stop after this many positions (None = no limit)
         start_date: Start from this date (YYYYMMDD format)
-        workers: Number of parallel workers
+        workers: Number of parallel workers for processing AND downloading
         keep_tar: Keep downloaded .tar files
     """
     os.makedirs(output_dir, exist_ok=True)
@@ -439,7 +464,7 @@ def download_and_process_t80(
     print(f"Source: {base_url}")
     print(f"Output: {output_dir}")
     print(f"Files to download: {num_files}")
-    print(f"Workers: {workers}")
+    print(f"Workers: {workers} (parallel downloads + parallel processing)")
     print(f"{'='*60}\n")
 
     # Get list of available files
@@ -467,19 +492,31 @@ def download_and_process_t80(
     all_policies = []
     all_values = []
 
-    for file_idx, filename in enumerate(files):
-        url = base_url + filename
-        tar_path = os.path.join(output_dir, filename)
+    # PHASE 1: Download all files in parallel (much faster!)
+    print(f"\n--- PHASE 1: Parallel Download ({min(workers, len(files))} concurrent) ---")
+    download_args = [
+        (base_url + filename, os.path.join(output_dir, filename), idx, len(files))
+        for idx, filename in enumerate(files)
+    ]
 
-        print(f"\n[{file_idx + 1}/{len(files)}] Downloading {filename}...")
+    downloaded_files = []
+    with ThreadPoolExecutor(max_workers=min(workers, len(files))) as executor:
+        for tar_path, success, msg in tqdm(
+            executor.map(download_single_file, download_args),
+            total=len(files),
+            desc="Downloading"
+        ):
+            print(f"  {msg}")
+            if success:
+                downloaded_files.append(tar_path)
 
-        # Download .tar file
-        if not os.path.exists(tar_path):
-            if not download_file(url, tar_path):
-                continue
+    print(f"\nDownloaded {len(downloaded_files)}/{len(files)} files")
 
-        # Extract and process .chunk.gz files from tar
-        print(f"Processing {filename}...")
+    # PHASE 2: Process downloaded files
+    print(f"\n--- PHASE 2: Process Files ({workers} workers) ---")
+    for file_idx, tar_path in enumerate(downloaded_files):
+        filename = os.path.basename(tar_path)
+        print(f"\n[{file_idx + 1}/{len(downloaded_files)}] Processing {filename}...")
 
         try:
             with tarfile.open(tar_path, 'r') as tar:
