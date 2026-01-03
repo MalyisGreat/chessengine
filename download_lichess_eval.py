@@ -20,6 +20,7 @@ we get direct Stockfish evaluations for each position.
 
 import os
 import json
+import time
 import numpy as np
 from tqdm import tqdm
 import chess
@@ -27,6 +28,33 @@ from datasets import load_dataset
 import multiprocessing as mp
 
 from data.encoder import BoardEncoder
+
+
+def load_dataset_with_retry(dataset_name, split="train", streaming=True, max_retries=5):
+    """Load HuggingFace dataset with retry logic for timeouts"""
+    import httpx
+
+    for attempt in range(max_retries):
+        try:
+            print(f"  Attempt {attempt + 1}/{max_retries}...")
+            # Increase timeout for large datasets
+            os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "300"
+            dataset = load_dataset(
+                dataset_name,
+                split=split,
+                streaming=streaming,
+                trust_remote_code=True,
+            )
+            print("  Dataset loaded successfully!")
+            return dataset
+        except (httpx.ReadTimeout, httpx.ConnectTimeout, Exception) as e:
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # Exponential backoff: 1, 2, 4, 8, 16 seconds
+                print(f"  Timeout/error, retrying in {wait_time}s... ({e.__class__.__name__})")
+                time.sleep(wait_time)
+            else:
+                print(f"  Failed after {max_retries} attempts")
+                raise
 
 
 def cp_to_winrate(cp: int) -> float:
@@ -193,8 +221,8 @@ def download_lichess_evaluated(
 
     print("Loading dataset from HuggingFace (streaming mode)...")
 
-    # Load dataset in streaming mode to avoid downloading everything
-    dataset = load_dataset(
+    # Load dataset with retry logic for timeouts
+    dataset = load_dataset_with_retry(
         "Lichess/chess-position-evaluations",
         split="train",
         streaming=streaming,
