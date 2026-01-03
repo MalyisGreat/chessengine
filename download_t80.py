@@ -627,8 +627,26 @@ def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndar
         # NOTE: Lc0 V6 stores policy as LOGITS (pre-softmax), not probabilities!
         policy_logits = record['probabilities']
 
+        # Debug: track why policies are rejected
+        if "debug_finite_fail" not in stats:
+            stats["debug_finite_fail"] = 0
+            stats["debug_sum_fail"] = 0
+            stats["debug_samples"] = []
+
         # Check for valid logits
         if not np.isfinite(policy_logits).all():
+            stats["debug_finite_fail"] += 1
+            if len(stats["debug_samples"]) < 3:
+                finite_mask = np.isfinite(policy_logits)
+                stats["debug_samples"].append({
+                    "type": "not_finite",
+                    "finite_count": int(np.sum(finite_mask)),
+                    "total": len(policy_logits),
+                    "min": float(np.nanmin(policy_logits)),
+                    "max": float(np.nanmax(policy_logits)),
+                    "has_nan": bool(np.isnan(policy_logits).any()),
+                    "has_inf": bool(np.isinf(policy_logits).any()),
+                })
             stats["skipped_policy"] += 1
             continue
 
@@ -639,6 +657,14 @@ def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndar
         policy_sum = np.sum(policy)
 
         if not np.isfinite(policy_sum) or policy_sum <= 0:
+            stats["debug_sum_fail"] += 1
+            if len(stats["debug_samples"]) < 3:
+                stats["debug_samples"].append({
+                    "type": "sum_fail",
+                    "sum": float(policy_sum) if np.isfinite(policy_sum) else "inf/nan",
+                    "max_logit": float(np.max(policy_logits)),
+                    "min_logit": float(np.min(policy_logits)),
+                })
             stats["skipped_policy"] += 1
             continue
 
@@ -957,6 +983,10 @@ def download_and_process_t80(
                     tar_record_sizes = set()
                     tar_offsets = set()
 
+                    debug_finite_fail = 0
+                    debug_sum_fail = 0
+                    debug_samples = []
+
                     for boards, policies, values, stats in results:
                         if stats:
                             tar_total_records += stats.get("total_records", 0)
@@ -965,6 +995,10 @@ def download_and_process_t80(
                             tar_skipped_board += stats.get("skipped_board", 0)
                             tar_skipped_policy += stats.get("skipped_policy", 0)
                             tar_nan_value += stats.get("nan_value", 0)
+                            debug_finite_fail += stats.get("debug_finite_fail", 0)
+                            debug_sum_fail += stats.get("debug_sum_fail", 0)
+                            if len(debug_samples) < 5:
+                                debug_samples.extend(stats.get("debug_samples", []))
                             if stats.get("version") is not None:
                                 tar_versions.add(stats.get("version"))
                             if stats.get("policy_size") is not None:
@@ -996,6 +1030,11 @@ def download_and_process_t80(
                         f"  Layout: v{layout_version}, policy={layout_policy}, "
                         f"record={layout_record}, offset={layout_offset}"
                     )
+                    # Debug output for policy failures
+                    if debug_finite_fail > 0 or debug_sum_fail > 0:
+                        print(f"  DEBUG: finite_fail={debug_finite_fail:,}, sum_fail={debug_sum_fail:,}")
+                        for sample in debug_samples[:3]:
+                            print(f"    Sample: {sample}")
                 finally:
                     # Clean up temp files
                     for tmp_path in temp_files:
