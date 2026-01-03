@@ -213,6 +213,8 @@ Examples:
                         help="Dataset to use (default: t80)")
     parser.add_argument("--benchmark", action="store_true",
                         help="Run benchmark after training")
+    parser.add_argument("--download-only", action="store_true",
+                        help="Only download data (for CPU instance), don't train")
 
     args = parser.parse_args()
 
@@ -250,9 +252,13 @@ Examples:
     if not args.skip_install:
         install_dependencies()
 
-    # Step 1: Download and setup Stockfish
-    stockfish_path = download_stockfish()
-    set_stockfish_env(stockfish_path)
+    # Step 1: Download and setup Stockfish (skip for download-only mode)
+    stockfish_path = None
+    if not args.download_only:
+        stockfish_path = download_stockfish()
+        set_stockfish_env(stockfish_path)
+    else:
+        print("\n[Download-only mode - skipping Stockfish setup]")
 
     # Step 2: Download training data
     if not args.skip_download:
@@ -289,6 +295,21 @@ Examples:
             )
     else:
         print("\n[Skipping download - using existing data]")
+
+    # Exit early if download-only mode
+    if args.download_only:
+        print(f"""
+    ╔═══════════════════════════════════════════════════════════════╗
+    ║                    DOWNLOAD COMPLETE!                         ║
+    ╠═══════════════════════════════════════════════════════════════╣
+    ║  Data saved to: {args.data_dir:<43} ║
+    ║                                                               ║
+    ║  Next steps (on GPU instance):                                ║
+    ║  1. Mount this volume on your GPU instance                    ║
+    ║  2. Run: python train_a100.py --skip-download                 ║
+    ╚═══════════════════════════════════════════════════════════════╝
+        """)
+        return
 
     # Step 3: Train
     run_command(
