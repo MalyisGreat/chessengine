@@ -266,6 +266,8 @@ def _v6_record_size(policy_size: int) -> int:
 def _detect_v6_layout(data: bytes) -> Tuple[int, int, int, int]:
     scan_limit = min(len(data), 4 * 1024 * 1024)
     scan = data[:scan_limit]
+    best = None
+    best_hits = 0
     for version in (V6_VERSION, 7):
         pattern = struct.pack('<I', version)
         indices = []
@@ -284,14 +286,14 @@ def _detect_v6_layout(data: bytes) -> Tuple[int, int, int, int]:
         diff_counts: Dict[int, int] = {}
         for d in diffs:
             diff_counts[d] = diff_counts.get(d, 0) + 1
-        record_size = max(diff_counts.items(), key=lambda kv: kv[1])[0]
+        record_size, record_hits = max(diff_counts.items(), key=lambda kv: kv[1])
         if record_size <= 0:
             continue
         mod_counts: Dict[int, int] = {}
         for idx in indices:
             mod = idx % record_size
             mod_counts[mod] = mod_counts.get(mod, 0) + 1
-        offset = max(mod_counts.items(), key=lambda kv: kv[1])[0]
+        offset, offset_hits = max(mod_counts.items(), key=lambda kv: kv[1])
         if record_size <= 924 or (record_size - 924) % 4 != 0:
             continue
         policy_size = (record_size - 924) // 4
@@ -301,7 +303,12 @@ def _detect_v6_layout(data: bytes) -> Tuple[int, int, int, int]:
             input_format, = struct.unpack_from('<I', scan, offset + 4)
             if input_format > 10:
                 continue
-        return version, policy_size, record_size, offset
+        hits = min(record_hits, offset_hits)
+        if hits > best_hits:
+            best_hits = hits
+            best = (version, policy_size, record_size, offset)
+    if best:
+        return best
     return V6_VERSION, NUM_POLICY_MOVES, _v6_record_size(NUM_POLICY_MOVES), 0
 
 
@@ -555,6 +562,9 @@ def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndar
         policy = record['probabilities']
 
         # Normalize policy to sum to 1
+        if not np.isfinite(policy).all():
+            stats["skipped_policy"] += 1
+            continue
         with np.errstate(invalid="ignore", over="ignore"):
             policy_sum = float(np.sum(policy))
         if not np.isfinite(policy_sum) or policy_sum <= 0:
