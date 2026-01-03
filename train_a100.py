@@ -241,6 +241,7 @@ Examples:
             f"{sys.executable} download_lichess_eval.py "
             f"--output {args.data_dir} "
             f"--positions {args.positions} "
+            f"--batch-size 1000000 "  # Save every 1M positions (fewer files)
             f"--no-compress",  # Faster saves, larger files
             "Step 2/4: Downloading Lichess evaluated positions"
         )

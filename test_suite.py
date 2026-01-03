@@ -38,11 +38,11 @@ def test(name: str):
                 start = time.time()
                 result = func(*args, **kwargs)
                 elapsed = time.time() - start
-                print(f"✓ PASSED ({elapsed:.2f}s)")
+                print(f"PASS ({elapsed:.2f}s)")
                 TESTS_PASSED += 1
                 return result
             except Exception as e:
-                print(f"✗ FAILED: {e}")
+                print(f"FAIL: {e}")
                 traceback.print_exc()
                 TESTS_FAILED += 1
                 return None
@@ -676,8 +676,8 @@ def run_tests(quick: bool = False, gpu: bool = False, stockfish: bool = False):
     print("TEST SUMMARY")
     print("=" * 60)
     print(f"Tests run:    {TESTS_RUN}")
-    print(f"Tests passed: {TESTS_PASSED} ✓")
-    print(f"Tests failed: {TESTS_FAILED} ✗")
+    print(f"Tests passed: {TESTS_PASSED}")
+    print(f"Tests failed: {TESTS_FAILED}")
     print("=" * 60)
 
     if TESTS_FAILED > 0:
