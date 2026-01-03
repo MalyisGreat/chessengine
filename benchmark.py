@@ -62,20 +62,28 @@ class ChessBenchmark:
         """Try to find Stockfish binary"""
         import shutil
 
+        # Check environment variable first
+        env_path = os.environ.get("STOCKFISH_PATH")
+        if env_path and os.path.exists(env_path):
+            return env_path
+
         # Common paths
         paths = [
             "stockfish",
             "/usr/local/bin/stockfish",
             "/usr/bin/stockfish",
+            "/usr/games/stockfish",
+            os.path.expanduser("~/.stockfish/stockfish/stockfish-ubuntu-x86-64-avx2"),
             "C:\\Program Files\\Stockfish\\stockfish.exe",
             "stockfish.exe",
         ]
 
         for path in paths:
-            if shutil.which(path):
+            if shutil.which(path) or os.path.exists(path):
                 return path
 
         print("Warning: Stockfish not found. ELO testing disabled.")
+        print("Set STOCKFISH_PATH environment variable or install stockfish.")
         return None
 
     def run_all(self) -> dict:

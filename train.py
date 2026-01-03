@@ -469,13 +469,18 @@ class Trainer:
             print("  [Stockfish not available - skipping evaluation]")
             return None
 
-        # Try to find Stockfish
-        stockfish_paths = [
+        # Try to find Stockfish - check env variable first
+        stockfish_paths = []
+        env_path = os.environ.get("STOCKFISH_PATH")
+        if env_path:
+            stockfish_paths.append(env_path)
+        stockfish_paths.extend([
             "stockfish",
             "/usr/bin/stockfish",
             "/usr/local/bin/stockfish",
             "/usr/games/stockfish",
-        ]
+            os.path.expanduser("~/.stockfish/stockfish/stockfish-ubuntu-x86-64-avx2"),
+        ])
 
         sf = None
         for path in stockfish_paths:
