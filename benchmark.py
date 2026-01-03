@@ -27,6 +27,7 @@ from tqdm import tqdm
 
 from engine.search import ChessEngine
 from data.encoder import BoardEncoder
+from engine.stockfish_utils import find_stockfish_binary, open_stockfish_engine
 
 
 @dataclass
@@ -55,33 +56,16 @@ class ChessBenchmark:
             device: Device to run on
         """
         self.engine = ChessEngine(model_path, device=device, search_depth=4)
-        self.stockfish_path = stockfish_path or self._find_stockfish()
+        self.stockfish_path = find_stockfish_binary(stockfish_path)
+        if not self.stockfish_path:
+            self.stockfish_path = self._find_stockfish()
         self.encoder = BoardEncoder()
 
     def _find_stockfish(self) -> Optional[str]:
         """Try to find Stockfish binary"""
-        import shutil
-
-        # Check environment variable first
-        env_path = os.environ.get("STOCKFISH_PATH")
-        if env_path and os.path.exists(env_path):
-            return env_path
-
-        # Common paths
-        paths = [
-            "stockfish",
-            "/usr/local/bin/stockfish",
-            "/usr/bin/stockfish",
-            "/usr/games/stockfish",
-            os.path.expanduser("~/.stockfish/stockfish/stockfish-ubuntu-x86-64-avx2"),
-            "C:\\Program Files\\Stockfish\\stockfish.exe",
-            "stockfish.exe",
-        ]
-
-        for path in paths:
-            if shutil.which(path) or os.path.exists(path):
-                return path
-
+        path = find_stockfish_binary()
+        if path:
+            return path
         print("Warning: Stockfish not found. ELO testing disabled.")
         print("Set STOCKFISH_PATH environment variable or install stockfish.")
         return None
@@ -204,24 +188,29 @@ class ChessBenchmark:
         """Play a game against Stockfish"""
         board = chess.Board()
 
-        with chess.engine.SimpleEngine.popen_uci(self.stockfish_path) as stockfish:
-            stockfish.configure({"Skill Level": skill_level})
+        try:
+            with open_stockfish_engine(self.stockfish_path) as stockfish:
+                if "Skill Level" in stockfish.options:
+                    stockfish.configure({"Skill Level": skill_level})
 
-            while not board.is_game_over():
-                if board.turn == our_color:
-                    # Our move
-                    result = self.engine.search(board, time_limit=time_per_move)
-                    if result and result.best_move:
-                        board.push(result.best_move)
+                while not board.is_game_over():
+                    if board.turn == our_color:
+                        # Our move
+                        result = self.engine.search(board, time_limit=time_per_move)
+                        if result and result.best_move:
+                            board.push(result.best_move)
+                        else:
+                            break
                     else:
-                        break
-                else:
-                    # Stockfish move
-                    result = stockfish.play(
-                        board,
-                        chess.engine.Limit(time=time_per_move),
-                    )
-                    board.push(result.move)
+                        # Stockfish move
+                        result = stockfish.play(
+                            board,
+                            chess.engine.Limit(time=time_per_move),
+                        )
+                        board.push(result.move)
+        except Exception as e:
+            print(f"Stockfish error: {e}")
+            return "*"
 
         return board.result()
 
@@ -330,7 +319,7 @@ class ChessBenchmark:
             # Use Stockfish to find best move if available
             if self.stockfish_path:
                 try:
-                    with chess.engine.SimpleEngine.popen_uci(self.stockfish_path) as sf:
+                    with open_stockfish_engine(self.stockfish_path) as sf:
                         result = sf.play(board, chess.engine.Limit(depth=15))
                         puzzles.append((board.copy(), result.move))
                 except Exception:
@@ -369,7 +358,7 @@ class ChessBenchmark:
         top5_correct = 0
         total = 0
 
-        with chess.engine.SimpleEngine.popen_uci(self.stockfish_path) as stockfish:
+        with open_stockfish_engine(self.stockfish_path) as stockfish:
             for _ in tqdm(range(num_positions), desc="Testing positions"):
                 # Generate random position
                 board = chess.Board()

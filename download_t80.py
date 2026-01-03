@@ -148,6 +148,25 @@ def _format_duration(seconds: float) -> str:
     return f"{minutes:02d}:{sec:02d}"
 
 
+def _get_remote_size(url: str) -> Optional[int]:
+    try:
+        response = requests.head(url, timeout=30, allow_redirects=True)
+        response.raise_for_status()
+        size = response.headers.get("content-length")
+        return int(size) if size else None
+    except Exception:
+        return None
+
+
+def _validate_tar_file(path: str) -> Tuple[bool, Optional[str]]:
+    try:
+        with tarfile.open(path, "r") as tar:
+            tar.getmembers()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
 class DownloadProgress:
     def __init__(self, total_files: int):
         self.total_files = total_files
@@ -222,7 +241,10 @@ def _download_progress_reporter(progress: DownloadProgress, stop_event: threadin
             size_status = f"{_format_bytes(snapshot['bytes_downloaded'])}"
 
         active_items = []
-        for name, stats in sorted(snapshot["active"].items(), key=lambda x: x[1]["downloaded"], reverse=True)[:3]:
+        active_list = sorted(snapshot["active"].items(), key=lambda x: x[1]["downloaded"], reverse=True)
+        if len(active_list) > 8:
+            active_list = active_list[:8]
+        for name, stats in active_list:
             total = stats["total"]
             if total > 0:
                 active_items.append(f"{name} {stats['downloaded'] * 100 / total:.0f}%")
@@ -522,19 +544,36 @@ def list_t80_files(base_url: str = "https://storage.lczero.org/files/training_da
 
 def download_single_file(args):
     """Download a single file - for parallel downloading"""
-    url, tar_path, file_idx, total_files, progress = args
+    url, tar_path, file_idx, total_files, progress, verify = args
     filename = os.path.basename(tar_path)
+    expected_size = _get_remote_size(url) if verify else None
 
     if os.path.exists(tar_path):
         size = os.path.getsize(tar_path)
-        progress.mark_cached(filename, size)
-        return tar_path, True, f"[{file_idx+1}/{total_files}] {filename} (cached, {_format_bytes(size)})"
+        if expected_size and size < expected_size:
+            try:
+                os.unlink(tar_path)
+            except Exception:
+                pass
+        else:
+            if verify and not expected_size:
+                valid, error = _validate_tar_file(tar_path)
+                if not valid:
+                    try:
+                        os.unlink(tar_path)
+                    except Exception:
+                        pass
+                    return tar_path, False, f"[{file_idx+1}/{total_files}] {filename} invalid cache: {error}"
+            progress.mark_cached(filename, size)
+            return tar_path, True, f"[{file_idx+1}/{total_files}] {filename} (cached, {_format_bytes(size)})"
 
     try:
         response = requests.get(url, stream=True, timeout=60)
         response.raise_for_status()
 
         total_size = int(response.headers.get('content-length', 0))
+        if expected_size is None and total_size > 0:
+            expected_size = total_size
         progress.register(filename, total_size)
 
         with open(tar_path, 'wb') as f:
@@ -545,6 +584,24 @@ def download_single_file(args):
                 f.write(chunk)
                 downloaded += len(chunk)
                 progress.update(filename, len(chunk))
+
+        if expected_size and downloaded < expected_size:
+            progress.complete(filename, False)
+            try:
+                os.unlink(tar_path)
+            except Exception:
+                pass
+            return tar_path, False, f"[{file_idx+1}/{total_files}] {filename} incomplete download"
+
+        if verify:
+            valid, error = _validate_tar_file(tar_path)
+            if not valid:
+                progress.complete(filename, False)
+                try:
+                    os.unlink(tar_path)
+                except Exception:
+                    pass
+                return tar_path, False, f"[{file_idx+1}/{total_files}] {filename} invalid tar: {error}"
 
         progress.complete(filename, True)
         size_label = _format_bytes(total_size) if total_size > 0 else _format_bytes(downloaded)
@@ -622,10 +679,14 @@ def download_and_process_t80(
     )
     reporter_thread.start()
 
-    download_args = [
-        (base_url + filename, os.path.join(output_dir, filename), idx, len(files), progress)
-        for idx, filename in enumerate(files)
-    ]
+    verify_downloads = True
+    tar_urls = {}
+    download_args = []
+    for idx, filename in enumerate(files):
+        url = base_url + filename
+        tar_path = os.path.join(output_dir, filename)
+        tar_urls[tar_path] = url
+        download_args.append((url, tar_path, idx, len(files), progress, verify_downloads))
 
     downloaded_files = []
     max_workers = min(workers, len(files))
@@ -653,7 +714,41 @@ def download_and_process_t80(
         print(f"\n[{file_idx + 1}/{len(downloaded_files)}] Processing {filename}...")
 
         try:
-            with tarfile.open(tar_path, 'r') as tar:
+            attempt = 0
+            tar = None
+            while attempt < 2:
+                try:
+                    tar = tarfile.open(tar_path, 'r')
+                    _ = tar.getmembers()
+                    break
+                except Exception as e:
+                    if tar is not None:
+                        try:
+                            tar.close()
+                        except Exception:
+                            pass
+                    if attempt == 0:
+                        print(f"  Warning: {filename} invalid ({e}), re-downloading...")
+                        try:
+                            os.unlink(tar_path)
+                        except Exception:
+                            pass
+                        url = tar_urls.get(tar_path)
+                        if not url:
+                            raise
+                        if not download_file(url, tar_path, show_progress=True):
+                            raise
+                        valid, error = _validate_tar_file(tar_path)
+                        if not valid:
+                            raise RuntimeError(f"re-download invalid: {error}")
+                    else:
+                        raise
+                attempt += 1
+
+            if tar is None:
+                raise RuntimeError("failed to open tar file")
+
+            with tar:
                 members = [m for m in tar.getmembers() if m.name.endswith('.gz')]
 
                 # Extract all chunks to temp files for parallel processing

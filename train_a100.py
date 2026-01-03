@@ -64,6 +64,7 @@ def install_dependencies():
         "datasets",
         "tqdm",
         "tensorboard",
+        "matplotlib",
         "stockfish",
         "zstandard",
         "requests",

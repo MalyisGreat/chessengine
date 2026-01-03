@@ -37,6 +37,21 @@ python benchmark.py --model ./outputs/chess_engine_v1/checkpoint_best.pt --all
 python -m engine.play --model ./outputs/chess_engine_v1/checkpoint_best.pt
 ```
 
+## Monitoring & Graphs
+
+Training writes metrics to disk so you can track progress live:
+
+- TensorBoard logs: `./outputs/<experiment>/logs`
+- Epoch metrics: `./outputs/<experiment>/metrics.csv` and `metrics.jsonl`
+- Step metrics: `./outputs/<experiment>/step_metrics.csv`
+- Auto-generated plot: `./outputs/<experiment>/metrics.png`
+
+To view TensorBoard:
+
+```bash
+tensorboard --logdir ./outputs
+```
+
 ## Data Source
 
 Uses [Lichess Position Evaluations](https://huggingface.co/datasets/Lichess/chess-position-evaluations) from HuggingFace:

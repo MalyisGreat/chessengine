@@ -54,6 +54,8 @@ class TrainingConfig:
     # Stockfish evaluation during training
     eval_every_n_epochs: int = 1      # Run Stockfish eval every N epochs (0 to disable)
     eval_num_games: int = 10          # Number of games per evaluation
+    eval_time_per_move: float = 0.1   # Stockfish time per move during eval (seconds)
+    eval_stockfish_skill: int = 5     # Stockfish skill level during eval
 
 
 @dataclass
