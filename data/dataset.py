@@ -63,7 +63,11 @@ class ChessDataset(Dataset):
         if self.policies is not None:
             self.policy_size = self.policies.shape[1]
         elif self.policy_idx is not None:
-            self.policy_size = self.encoder.num_moves
+            # Use cached policy_size if available (for Lc0 1858 vs our 1968)
+            if hasattr(self, '_cached_policy_size') and self._cached_policy_size is not None:
+                self.policy_size = self._cached_policy_size
+            else:
+                self.policy_size = self.encoder.num_moves
 
         # Disable augmentation for non-standard policy sizes (Lc0 1858)
         # because flip_policy assumes our 1968-move encoding
@@ -117,7 +121,8 @@ class ChessDataset(Dataset):
             return None
 
     def _save_metadata_cache(self, path: str, files_info: List[Dict],
-                             policy_mode: str, policy_shape: Optional[Tuple[int, ...]]):
+                             policy_mode: str, policy_shape: Optional[Tuple[int, ...]],
+                             policy_size: Optional[int] = None):
         """Save file metadata to cache"""
         cache_path = os.path.join(path, "_metadata.json")
         cache = {
@@ -125,6 +130,7 @@ class ChessDataset(Dataset):
             'board_shape': [18, 8, 8],
             'policy_shape': list(policy_shape) if policy_shape else [],
             'policy_mode': policy_mode,
+            'policy_size': policy_size,
         }
         try:
             with open(cache_path, 'w') as f:
@@ -144,6 +150,7 @@ class ChessDataset(Dataset):
 
         policy_mode = None
         policy_shape = None
+        cached_policy_size = None
 
         if cache is not None:
             print("Using cached metadata (instant load)...")
@@ -152,6 +159,7 @@ class ChessDataset(Dataset):
             total_positions = sum(file_sizes)
             board_shape = tuple(cache.get('board_shape', [18, 8, 8]))
             policy_shape = tuple(cache.get('policy_shape', [self.encoder.num_moves]))
+            cached_policy_size = cache.get('policy_size')  # May be None for old caches
             policy_mode = cache.get('policy_mode')
             if policy_mode is None:
                 sample = np.load(os.path.join(path, valid_files[0]))
@@ -213,12 +221,17 @@ class ChessDataset(Dataset):
             board_shape = sample['boards'].shape[1:]
             if policy_mode == 'index':
                 policy_shape = None
+                # For index mode, try to infer policy size from max index
+                # This handles Lc0 (1858) vs our encoder (1968)
+                max_idx = int(sample['policy_idx'].max())
+                cached_policy_size = max_idx + 1  # Size is max_idx + 1
             else:
                 policy_shape = sample['policies'].shape[1:]
+                cached_policy_size = policy_shape[0]
             sample.close()
 
             # Save cache for next run
-            self._save_metadata_cache(path, files_info, policy_mode, policy_shape)
+            self._save_metadata_cache(path, files_info, policy_mode, policy_shape, cached_policy_size)
 
         if max_positions:
             total_positions = min(total_positions, max_positions)
@@ -235,6 +248,10 @@ class ChessDataset(Dataset):
             self.policies = np.zeros((total_positions, *policy_shape), dtype=np.float32)
             self.policy_idx = None
         self.values = np.zeros(total_positions, dtype=np.float32)
+
+        # Store detected policy_size for later use (handles Lc0 1858 vs our 1968)
+        if cached_policy_size is not None:
+            self._cached_policy_size = cached_policy_size
 
         # Phase 3: Load data directly into pre-allocated arrays (fast copy)
         print("Loading data...")
@@ -268,7 +285,10 @@ class ChessDataset(Dataset):
         if offset < total_positions:
             print(f"Trimming arrays from {total_positions} to {offset} positions")
             self.boards = self.boards[:offset]
-            self.policies = self.policies[:offset]
+            if self.policies is not None:
+                self.policies = self.policies[:offset]
+            if self.policy_idx is not None:
+                self.policy_idx = self.policy_idx[:offset]
             self.values = self.values[:offset]
 
     def __len__(self) -> int:

@@ -25,7 +25,7 @@ import numpy as np
 from tqdm import tqdm
 import chess
 from datasets import load_dataset
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 import multiprocessing as mp
 
 from data.encoder import BoardEncoder
@@ -70,8 +70,94 @@ def cp_to_winrate(cp: int) -> float:
     return winrate
 
 
+PIECE_TO_PLANE = {
+    'P': 0, 'N': 1, 'B': 2, 'R': 3, 'Q': 4, 'K': 5,  # White pieces
+    'p': 6, 'n': 7, 'b': 8, 'r': 9, 'q': 10, 'k': 11,  # Black pieces
+}
+
+PROMO_MAP = {
+    'q': chess.QUEEN,
+    'r': chess.ROOK,
+    'b': chess.BISHOP,
+    'n': chess.KNIGHT,
+}
+
+
+def fast_parse_fen(fen: str, tensor: np.ndarray) -> bool:
+    """Parse FEN directly into a pre-allocated tensor."""
+    try:
+        tensor.fill(0.0)
+        parts = fen.split(' ')
+        if len(parts) < 4:
+            return False
+
+        position, turn, castling, ep = parts[0], parts[1], parts[2], parts[3]
+
+        rank = 7
+        file = 0
+        for char in position:
+            if char == '/':
+                rank -= 1
+                file = 0
+            elif char.isdigit():
+                file += int(char)
+            elif char in PIECE_TO_PLANE:
+                plane = PIECE_TO_PLANE[char]
+                tensor[plane, rank, file] = 1.0
+                file += 1
+            else:
+                return False
+
+        if turn == 'w':
+            tensor[12, :, :] = 1.0
+
+        if 'K' in castling:
+            tensor[13, :, :] = 1.0
+        if 'Q' in castling:
+            tensor[14, :, :] = 1.0
+        if 'k' in castling:
+            tensor[15, :, :] = 1.0
+        if 'q' in castling:
+            tensor[16, :, :] = 1.0
+
+        if ep != '-' and len(ep) == 2:
+            ep_file = ord(ep[0]) - ord('a')
+            ep_rank = int(ep[1]) - 1
+            if 0 <= ep_file < 8 and 0 <= ep_rank < 8:
+                tensor[17, ep_rank, ep_file] = 1.0
+
+        return True
+    except Exception:
+        return False
+
+
+def fast_parse_uci_move(move_str: str):
+    """Parse UCI move into (from_sq, to_sq, promotion)."""
+    if len(move_str) < 4:
+        return None
+
+    from_file = ord(move_str[0]) - ord('a')
+    from_rank = ord(move_str[1]) - ord('1')
+    to_file = ord(move_str[2]) - ord('a')
+    to_rank = ord(move_str[3]) - ord('1')
+
+    if not (0 <= from_file < 8 and 0 <= from_rank < 8 and 0 <= to_file < 8 and 0 <= to_rank < 8):
+        return None
+
+    promotion = None
+    if len(move_str) >= 5:
+        promotion = PROMO_MAP.get(move_str[4])
+        if promotion is None:
+            return None
+
+    from_sq = from_rank * 8 + from_file
+    to_sq = to_rank * 8 + to_file
+    return from_sq, to_sq, promotion
+
+
 def _maybe_write_metadata_cache(output_dir: str, files_info: list,
-                                board_shape: tuple, policy_shape: tuple) -> None:
+                                board_shape: tuple, policy_shape: tuple,
+                                policy_mode: str) -> None:
     if not files_info:
         return
     disk_files = [f for f in os.listdir(output_dir) if f.endswith('.npz')]
@@ -83,6 +169,7 @@ def _maybe_write_metadata_cache(output_dir: str, files_info: list,
         'files': files_info,
         'board_shape': list(board_shape),
         'policy_shape': list(policy_shape),
+        'policy_mode': policy_mode,
     }
     try:
         with open(cache_path, 'w') as f:
@@ -91,83 +178,69 @@ def _maybe_write_metadata_cache(output_dir: str, files_info: list,
         pass
 
 
-def process_single_position(args):
-    """Process a single position - for multiprocessing"""
-    fen, line, cp, mate = args
-    global _encoder
-
-    if _encoder is None:
-        _encoder = BoardEncoder()
-
-    # Get centipawn evaluation
-    if cp is not None:
-        eval_cp = cp
-    elif mate is not None:
-        eval_cp = 10000 if mate > 0 else -10000
-    else:
-        return None
-
-    if not line:
-        return None
-
-    moves = line.split()
-    if not moves:
-        return None
-
-    best_move_uci = moves[0]
-
-    try:
-        if fen.count(' ') == 3:
-            fen = fen + ' 0 1'
-
-        board = chess.Board(fen)
-        best_move = chess.Move.from_uci(best_move_uci)
-
-        if best_move not in board.legal_moves:
-            return None
-
-        board_tensor = _encoder.encode_board(board)
-
-        policy = np.zeros(_encoder.num_moves, dtype=np.float32)
-        move_idx = _encoder.encode_move(best_move)
-        if move_idx < 0:
-            return None
-        policy[move_idx] = 1.0
-
-        value = cp_to_winrate(eval_cp)
-
-        return (board_tensor, policy, value)
-    except:
-        return None
-
-
 def process_batch_fast(batch_data):
     """Process a batch using the global encoder"""
     global _encoder
     if _encoder is None:
         _encoder = BoardEncoder()
 
-    boards = []
-    policies = []
-    values = []
+    batch_len = len(batch_data['fen'])
+    boards = np.zeros((batch_len, 18, 8, 8), dtype=np.float32)
+    policy_idx = np.zeros(batch_len, dtype=np.int32)
+    values = np.zeros(batch_len, dtype=np.float32)
+    count = 0
 
-    for i in range(len(batch_data['fen'])):
-        result = process_single_position((
-            batch_data['fen'][i],
-            batch_data['line'][i],
-            batch_data['cp'][i],
-            batch_data['mate'][i],
-        ))
-        if result is not None:
-            boards.append(result[0])
-            policies.append(result[1])
-            values.append(result[2])
+    for i in range(batch_len):
+        fen = batch_data['fen'][i]
+        line = batch_data['line'][i]
+        cp = batch_data['cp'][i]
+        mate = batch_data['mate'][i]
 
-    if boards:
+        if cp is not None:
+            eval_cp = cp
+        elif mate is not None:
+            eval_cp = 10000 if mate > 0 else -10000
+        else:
+            continue
+
+        if not line:
+            continue
+
+        moves = line.split()
+        if not moves:
+            continue
+
+        # Validate move legality by trying to parse with python-chess
+        # This catches corrupted FENs and invalid PV lines
+        try:
+            board = chess.Board(fen)
+            move = board.parse_uci(moves[0])
+            if move not in board.legal_moves:
+                continue
+        except (ValueError, chess.InvalidMoveError, chess.AmbiguousMoveError):
+            continue
+
+        move_parsed = fast_parse_uci_move(moves[0])
+        if move_parsed is None:
+            continue
+
+        from_sq, to_sq, promotion = move_parsed
+        move_idx = _encoder.move_to_idx.get((from_sq, to_sq, promotion), -1)
+        if move_idx < 0:
+            continue
+
+        if not fast_parse_fen(fen, boards[count]):
+            continue
+
+        policy_idx[count] = move_idx
+        values[count] = cp_to_winrate(eval_cp)
+        count += 1
+
+    if count > 0:
         return (
-            np.array(boards, dtype=np.float32),
-            np.array(policies, dtype=np.float32),
-            np.array(values, dtype=np.float32),
+            boards[:count],
+            policy_idx[:count],
+            values[:count],
         )
     return None
 
@@ -179,11 +252,12 @@ def download_lichess_evaluated(
     streaming: bool = True,
     compress: bool = True,
     num_workers: int = None,
+    compact_policy: bool = True,
 ):
     """
     Download and process Lichess evaluated positions from HuggingFace
 
-    Uses multiprocessing for ~10x speedup.
+    Uses multiprocessing for speed.
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -200,6 +274,8 @@ def download_lichess_evaluated(
     print(f"Output: {output_dir}")
     print(f"Workers: {num_workers}")
     print(f"Policy size: {encoder.num_moves}")
+    if compact_policy:
+        print("Policy format: indices (compact)")
     print(f"{'='*60}\n")
 
     print("Loading dataset from HuggingFace (streaming mode)...")
@@ -211,7 +287,7 @@ def download_lichess_evaluated(
     )
 
     all_boards = []
-    all_policies = []
+    all_policy_idx = []
     all_values = []
     total_positions = 0
     chunk_idx = 0
@@ -256,9 +332,9 @@ def download_lichess_evaluated(
                 for future in futures:
                     result = future.result()
                     if result is not None:
-                        boards, policies, values = result
+                        boards, policy_idx, values = result
                         all_boards.append(boards)
-                        all_policies.append(policies)
+                        all_policy_idx.append(policy_idx)
                         all_values.append(values)
                         total_positions += len(boards)
                         pbar.update(len(boards))
@@ -272,15 +348,42 @@ def download_lichess_evaluated(
                     chunk_path = os.path.join(output_dir, chunk_name)
 
                     concat_boards = np.concatenate(all_boards)
-                    concat_policies = np.concatenate(all_policies)
+                    concat_policy_idx = np.concatenate(all_policy_idx)
                     concat_values = np.concatenate(all_values)
 
-                    if compress:
-                        np.savez_compressed(chunk_path, boards=concat_boards,
-                                          policies=concat_policies, values=concat_values)
+                    if compact_policy:
+                        if compress:
+                            np.savez_compressed(
+                                chunk_path,
+                                boards=concat_boards,
+                                policy_idx=concat_policy_idx,
+                                values=concat_values,
+                            )
+                        else:
+                            np.savez(
+                                chunk_path,
+                                boards=concat_boards,
+                                policy_idx=concat_policy_idx,
+                                values=concat_values,
+                            )
                     else:
-                        np.savez(chunk_path, boards=concat_boards,
-                                policies=concat_policies, values=concat_values)
+                        policies = np.zeros((len(concat_policy_idx), encoder.num_moves), dtype=np.float32)
+                        policies[np.arange(len(concat_policy_idx)), concat_policy_idx] = 1.0
+
+                        if compress:
+                            np.savez_compressed(
+                                chunk_path,
+                                boards=concat_boards,
+                                policies=policies,
+                                values=concat_values,
+                            )
+                        else:
+                            np.savez(
+                                chunk_path,
+                                boards=concat_boards,
+                                policies=policies,
+                                values=concat_values,
+                            )
 
                     print(f"\n  Saved {chunk_path} ({current_size:,} positions)")
 
@@ -292,7 +395,7 @@ def download_lichess_evaluated(
 
                     chunk_idx += 1
                     all_boards = []
-                    all_policies = []
+                    all_policy_idx = []
                     all_values = []
 
     pbar.close()
@@ -302,7 +405,7 @@ def download_lichess_evaluated(
         result = process_batch_fast(batch_data)
         if result is not None:
             all_boards.append(result[0])
-            all_policies.append(result[1])
+            all_policy_idx.append(result[1])
             all_values.append(result[2])
 
     # Save remaining data
@@ -312,15 +415,42 @@ def download_lichess_evaluated(
         current_size = sum(len(b) for b in all_boards)
 
         concat_boards = np.concatenate(all_boards)
-        concat_policies = np.concatenate(all_policies)
+        concat_policy_idx = np.concatenate(all_policy_idx)
         concat_values = np.concatenate(all_values)
 
-        if compress:
-            np.savez_compressed(chunk_path, boards=concat_boards,
-                              policies=concat_policies, values=concat_values)
+        if compact_policy:
+            if compress:
+                np.savez_compressed(
+                    chunk_path,
+                    boards=concat_boards,
+                    policy_idx=concat_policy_idx,
+                    values=concat_values,
+                )
+            else:
+                np.savez(
+                    chunk_path,
+                    boards=concat_boards,
+                    policy_idx=concat_policy_idx,
+                    values=concat_values,
+                )
         else:
-            np.savez(chunk_path, boards=concat_boards,
-                    policies=concat_policies, values=concat_values)
+            policies = np.zeros((len(concat_policy_idx), encoder.num_moves), dtype=np.float32)
+            policies[np.arange(len(concat_policy_idx)), concat_policy_idx] = 1.0
+
+            if compress:
+                np.savez_compressed(
+                    chunk_path,
+                    boards=concat_boards,
+                    policies=policies,
+                    values=concat_values,
+                )
+            else:
+                np.savez(
+                    chunk_path,
+                    boards=concat_boards,
+                    policies=policies,
+                    values=concat_values,
+                )
 
         print(f"\n  Saved {chunk_path} ({current_size:,} positions)")
         files_info.append({
@@ -329,9 +459,15 @@ def download_lichess_evaluated(
             'mtime': os.path.getmtime(chunk_path),
         })
 
-    _maybe_write_metadata_cache(output_dir, files_info,
-                                board_shape=(18, 8, 8),
-                                policy_shape=(encoder.num_moves,))
+    policy_mode = 'index' if compact_policy else 'one_hot'
+    policy_shape = () if compact_policy else (encoder.num_moves,)
+    _maybe_write_metadata_cache(
+        output_dir,
+        files_info,
+        board_shape=(18, 8, 8),
+        policy_shape=policy_shape,
+        policy_mode=policy_mode,
+    )
 
     print(f"\n{'='*60}")
     print(f"DOWNLOAD COMPLETE")
@@ -360,12 +496,16 @@ def verify_dataset(data_dir: str, num_samples: int = 5):
 
     data = np.load(files[0])
     boards = data['boards']
-    policies = data['policies']
+    policy_idx = data['policy_idx'] if 'policy_idx' in data else None
+    policies = data['policies'] if 'policies' in data else None
     values = data['values']
 
     print(f"\nFirst chunk stats:")
     print(f"  Boards shape: {boards.shape}")
-    print(f"  Policies shape: {policies.shape}")
+    if policy_idx is not None:
+        print(f"  Policy idx shape: {policy_idx.shape}")
+    if policies is not None:
+        print(f"  Policies shape: {policies.shape}")
     print(f"  Values shape: {values.shape}")
 
     print(f"\nValue distribution (should be spread, not all near 0):")
@@ -386,7 +526,10 @@ def verify_dataset(data_dir: str, num_samples: int = 5):
     encoder = BoardEncoder()
     print(f"\nSample positions:")
     for i in range(min(num_samples, len(boards))):
-        move_idx = np.argmax(policies[i])
+        if policy_idx is not None:
+            move_idx = int(policy_idx[i])
+        else:
+            move_idx = int(np.argmax(policies[i]))
         move = encoder.decode_move(move_idx)
         value = values[i]
         print(f"  Position {i}: best_move={move.uci()}, value={value:.3f}")
@@ -402,8 +545,18 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=100_000)
     parser.add_argument("--no-compress", action="store_true")
     parser.add_argument("--workers", type=int, default=None)
+    parser.add_argument("--compact-policy", action="store_true",
+                        help="Store policy as move indices (smaller, faster)")
+    parser.add_argument("--full-policy", action="store_true",
+                        help="Store full one-hot policy vectors (very large)")
 
     args = parser.parse_args()
+
+    compact_policy = True
+    if args.full_policy:
+        compact_policy = False
+    if args.compact_policy:
+        compact_policy = True
 
     if args.verify:
         verify_dataset(args.output)
@@ -414,4 +567,5 @@ if __name__ == "__main__":
             batch_size=args.batch_size,
             compress=not args.no_compress,
             num_workers=args.workers,
+            compact_policy=compact_policy,
         )

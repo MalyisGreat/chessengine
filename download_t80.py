@@ -227,34 +227,69 @@ def lc0_planes_to_board(planes: np.ndarray, castling: tuple,
         11: Their kings
         12: Repetition count (we ignore)
 
+    IMPORTANT: Lc0 planes are ALWAYS from the side-to-move's perspective.
+    Our encoding is always from White's perspective.
+    So when black is to move, we need to flip the board vertically and
+    swap "our" pieces (0-5) with "their" pieces (6-11).
+
     Remaining planes are history (we ignore for now).
     """
     board = np.zeros((18, 8, 8), dtype=np.float32)
 
+    # When black to move, Lc0's "our" is black and "their" is white
+    # We need to swap and flip vertically
+    is_black_to_move = (side_to_move == 1)
+
     # Extract piece bitboards (first 12 planes)
-    for plane_idx in range(12):
-        bitboard = planes[plane_idx]
+    for lc0_plane_idx in range(12):
+        bitboard = planes[lc0_plane_idx]
+
+        # Determine which plane this maps to in our encoding
+        if is_black_to_move:
+            # Swap: Lc0's "our" (0-5) -> our black (6-11)
+            #       Lc0's "their" (6-11) -> our white (0-5)
+            if lc0_plane_idx < 6:
+                our_plane_idx = lc0_plane_idx + 6  # Black pieces
+            else:
+                our_plane_idx = lc0_plane_idx - 6  # White pieces
+        else:
+            our_plane_idx = lc0_plane_idx
+
         for sq in range(64):
             if bitboard & (1 << sq):
                 rank = sq // 8
                 file = sq % 8
-                board[plane_idx, rank, file] = 1.0
+                # Flip vertically when black to move
+                if is_black_to_move:
+                    rank = 7 - rank
+                board[our_plane_idx, rank, file] = 1.0
 
-    # Side to move (plane 12) - Lc0 always represents from current player's view
-    # So if side_to_move == 1 (black), we need to flip
-    if side_to_move == 0:  # White to move
+    # Side to move (plane 12) - always set for white to move
+    if not is_black_to_move:
         board[12, :, :] = 1.0
 
     # Castling rights (planes 13-16)
+    # Lc0 castling is from side-to-move perspective, we need white's perspective
     us_ooo, us_oo, them_ooo, them_oo = castling
-    if us_oo:
-        board[13, :, :] = 1.0
-    if us_ooo:
-        board[14, :, :] = 1.0
-    if them_oo:
-        board[15, :, :] = 1.0
-    if them_ooo:
-        board[16, :, :] = 1.0
+    if is_black_to_move:
+        # Swap: "us" is black, "them" is white
+        if them_oo:  # White kingside
+            board[13, :, :] = 1.0
+        if them_ooo:  # White queenside
+            board[14, :, :] = 1.0
+        if us_oo:  # Black kingside
+            board[15, :, :] = 1.0
+        if us_ooo:  # Black queenside
+            board[16, :, :] = 1.0
+    else:
+        if us_oo:  # White kingside
+            board[13, :, :] = 1.0
+        if us_ooo:  # White queenside
+            board[14, :, :] = 1.0
+        if them_oo:  # Black kingside
+            board[15, :, :] = 1.0
+        if them_ooo:  # Black queenside
+            board[16, :, :] = 1.0
 
     # En passant - extracted from planes if available
     # For simplicity, we'll skip en passant in initial version
@@ -309,7 +344,11 @@ def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndar
         # Value from position evaluation (best_q) or game result
         # best_q is the MCTS-backed evaluation, result_q is game outcome
         # We use best_q for position evaluation (more stable than game result)
+        # NOTE: best_q is from side-to-move's perspective, but our encoding
+        # is always from White's perspective, so flip for black
         value = record['best_q']
+        if record['side_to_move'] == 1:  # Black to move
+            value = -value
 
         # Clamp to [-1, 1]
         value = max(-1.0, min(1.0, value))
@@ -446,49 +485,61 @@ def download_and_process_t80(
             with tarfile.open(tar_path, 'r') as tar:
                 members = [m for m in tar.getmembers() if m.name.endswith('.gz')]
 
-                for member in tqdm(members, desc="Processing chunks"):
-                    # Extract chunk to temp location
+                # Extract all chunks to temp files for parallel processing
+                temp_files = []
+                for member in members:
                     chunk_data = tar.extractfile(member).read()
+                    tmp = tempfile.NamedTemporaryFile(suffix='.gz', delete=False)
+                    tmp.write(chunk_data)
+                    tmp.close()
+                    temp_files.append(tmp.name)
 
-                    # Write to temp file and process
-                    with tempfile.NamedTemporaryFile(suffix='.gz', delete=False) as tmp:
-                        tmp.write(chunk_data)
-                        tmp_path = tmp.name
+                # Process chunks in parallel using ProcessPoolExecutor
+                try:
+                    with ProcessPoolExecutor(max_workers=workers) as executor:
+                        results = list(tqdm(
+                            executor.map(process_chunk_file, temp_files),
+                            total=len(temp_files),
+                            desc="Processing chunks"
+                        ))
 
-                    try:
-                        boards, policies, values = process_chunk_file(tmp_path)
-
+                    for boards, policies, values in results:
                         if boards is not None:
                             all_boards.append(boards)
                             all_policies.append(policies)
                             all_values.append(values)
                             total_positions += len(boards)
-                    finally:
-                        os.unlink(tmp_path)
 
-                    # Save chunk when we have enough
-                    current_size = sum(len(b) for b in all_boards)
-                    if current_size >= 1_000_000:  # Save every 1M positions
-                        chunk_name = f"chunk_{chunk_idx:04d}.npz"
-                        chunk_path = os.path.join(output_dir, chunk_name)
+                        # Check position limit
+                        if num_positions and total_positions >= num_positions:
+                            break
+                finally:
+                    # Clean up temp files
+                    for tmp_path in temp_files:
+                        try:
+                            os.unlink(tmp_path)
+                        except:
+                            pass
 
-                        np.savez(
-                            chunk_path,
-                            boards=np.concatenate(all_boards),
-                            policies=np.concatenate(all_policies),
-                            values=np.concatenate(all_values),
-                        )
+                # Save chunk when we have enough
+                current_size = sum(len(b) for b in all_boards)
+                if current_size >= 1_000_000:  # Save every 1M positions
+                    chunk_name = f"chunk_{chunk_idx:04d}.npz"
+                    chunk_path = os.path.join(output_dir, chunk_name)
 
-                        print(f"\n  Saved {chunk_path} ({current_size:,} positions)")
+                    np.savez(
+                        chunk_path,
+                        boards=np.concatenate(all_boards),
+                        policies=np.concatenate(all_policies),
+                        values=np.concatenate(all_values),
+                    )
 
-                        chunk_idx += 1
-                        all_boards = []
-                        all_policies = []
-                        all_values = []
+                    print(f"\n  Saved {chunk_path} ({current_size:,} positions)")
 
-                    # Check position limit
-                    if num_positions and total_positions >= num_positions:
-                        break
+                    chunk_idx += 1
+                    all_boards = []
+                    all_policies = []
+                    all_values = []
 
             # Remove tar file if not keeping
             if not keep_tar and os.path.exists(tar_path):

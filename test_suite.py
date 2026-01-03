@@ -350,6 +350,98 @@ def test_dataloader():
         shutil.rmtree(temp_dir)
 
 
+@test("Dataset - Policy Index Mode (Compact)")
+def test_dataset_policy_idx():
+    """Test loading datasets with policy_idx (compact Lichess format)"""
+    from data.dataset import ChessDataset
+    import tempfile
+    import shutil
+
+    temp_dir = tempfile.mkdtemp()
+    try:
+        # Create test data with policy_idx instead of full policies
+        boards = np.random.randn(100, 18, 8, 8).astype(np.float32)
+        policy_idx = np.random.randint(0, NUM_MOVES, 100).astype(np.int32)
+        values = np.random.uniform(-1, 1, 100).astype(np.float32)
+
+        np.savez(os.path.join(temp_dir, "test.npz"),
+                 boards=boards, policy_idx=policy_idx, values=values)
+
+        dataset = ChessDataset(temp_dir, augment=False)
+
+        assert len(dataset) == 100, f"Expected 100 samples, got {len(dataset)}"
+        assert dataset.policy_size == NUM_MOVES, f"Expected policy_size {NUM_MOVES}"
+
+        # Test getitem - should return long tensor for policy
+        board, policy, value = dataset[0]
+        assert board.shape == (18, 8, 8), f"Board shape wrong: {board.shape}"
+        assert policy.dtype == np.int64 or str(policy.dtype) == 'torch.int64', f"Policy should be long tensor for index mode"
+        assert 0 <= policy.item() < NUM_MOVES, f"Policy index out of range: {policy.item()}"
+
+        print(f"  - Loaded {len(dataset)} samples with policy_idx")
+        print(f"  - Policy index: {policy.item()}")
+        print(f"  - Policy size: {dataset.policy_size}")
+
+    finally:
+        shutil.rmtree(temp_dir)
+
+
+@test("Dataset - Soft Policy Targets (T80 Style)")
+def test_dataset_soft_targets():
+    """Test loading datasets with soft policy targets (T80/Lc0 format)"""
+    import torch
+    from data.dataset import ChessDataset
+    from models.network import ChessLoss
+    import tempfile
+    import shutil
+
+    temp_dir = tempfile.mkdtemp()
+    LC0_POLICY_SIZE = 1858  # Lc0 uses 1858 moves
+
+    try:
+        # Create test data with soft policy targets (Lc0 T80 style)
+        boards = np.random.randn(100, 18, 8, 8).astype(np.float32)
+
+        # Soft policy: probability distribution over moves
+        policies = np.random.exponential(1, (100, LC0_POLICY_SIZE)).astype(np.float32)
+        policies = policies / policies.sum(axis=1, keepdims=True)  # Normalize
+
+        values = np.random.uniform(-1, 1, 100).astype(np.float32)
+
+        np.savez(os.path.join(temp_dir, "test.npz"),
+                 boards=boards, policies=policies, values=values)
+
+        dataset = ChessDataset(temp_dir, augment=False)
+
+        assert len(dataset) == 100, f"Expected 100 samples, got {len(dataset)}"
+        assert dataset.policy_size == LC0_POLICY_SIZE, f"Expected policy_size {LC0_POLICY_SIZE}, got {dataset.policy_size}"
+
+        # Test getitem - should return full distribution
+        board, policy, value = dataset[0]
+        assert board.shape == (18, 8, 8), f"Board shape wrong: {board.shape}"
+        assert policy.shape == (LC0_POLICY_SIZE,), f"Policy shape wrong: {policy.shape}"
+        assert abs(policy.sum().item() - 1.0) < 0.01, f"Policy should sum to ~1, got {policy.sum().item()}"
+
+        # Test that loss function works with soft targets
+        loss_fn = ChessLoss()
+        policy_logits = torch.randn(2, LC0_POLICY_SIZE)
+        value_pred = torch.tensor([0.5, -0.5])
+        policy_target = torch.stack([policy, policy])
+        value_target = torch.tensor([0.3, -0.3])
+
+        total, p_loss, v_loss = loss_fn(policy_logits, value_pred, policy_target, value_target)
+        assert not torch.isnan(total), "Loss should not be NaN"
+        assert total.item() > 0, "Loss should be positive"
+
+        print(f"  - Loaded {len(dataset)} samples with soft targets")
+        print(f"  - Policy size: {dataset.policy_size} (Lc0 format)")
+        print(f"  - Policy entropy: {-(policy * torch.log(policy + 1e-10)).sum().item():.3f}")
+        print(f"  - Soft target loss computed correctly")
+
+    finally:
+        shutil.rmtree(temp_dir)
+
+
 # ============================================================================
 # SEARCH & ENGINE TESTS
 # ============================================================================
@@ -653,6 +745,8 @@ def run_tests(quick: bool = False, gpu: bool = False, stockfish: bool = False):
     print("\n>>> DATA LOADING TESTS")
     test_dataset_loading()
     test_dataloader()
+    test_dataset_policy_idx()
+    test_dataset_soft_targets()
 
     print("\n>>> SEARCH & ENGINE TESTS")
     test_search_basic()
