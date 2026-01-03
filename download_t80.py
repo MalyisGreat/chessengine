@@ -487,7 +487,7 @@ def lc0_planes_to_board(planes: np.ndarray, castling: tuple,
     return board
 
 
-def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
     """
     Process a single .chunk.gz file and extract training data.
 
@@ -495,7 +495,20 @@ def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndar
         boards: (N, 18, 8, 8) float32
         policies: (N, 1858) float32 - soft targets!
         values: (N,) float32
+        stats: dict with record counts and layout info
     """
+    stats = {
+        "version": None,
+        "policy_size": None,
+        "record_size": None,
+        "offset": None,
+        "total_records": 0,
+        "skipped_record": 0,
+        "skipped_board": 0,
+        "skipped_policy": 0,
+        "nan_value": 0,
+        "kept": 0,
+    }
     boards_list = []
     policies_list = []
     values_list = []
@@ -507,7 +520,15 @@ def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndar
     num_records = (len(data) - offset) // record_size
 
     if num_records <= 0:
-        return None, None, None
+        return None, None, None, stats
+
+    stats.update({
+        "version": version,
+        "policy_size": policy_size,
+        "record_size": record_size,
+        "offset": offset,
+        "total_records": num_records,
+    })
 
     for i in range(num_records):
         start = offset + i * record_size
@@ -515,6 +536,7 @@ def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndar
         record = parse_v6_record(record_data, policy_size, version)
 
         if record is None:
+            stats["skipped_record"] += 1
             continue
 
         # Convert to our format
@@ -526,17 +548,19 @@ def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndar
                 record['rule50']
             )
         except (TypeError, ValueError):
+            stats["skipped_board"] += 1
             continue
 
         # Use soft policy targets (the key advantage of T80!)
         policy = record['probabilities']
 
         # Normalize policy to sum to 1
-        policy_sum = float(np.sum(policy))
-        if np.isfinite(policy_sum) and policy_sum > 0:
-            policy = policy / policy_sum
-        else:
+        with np.errstate(invalid="ignore", over="ignore"):
+            policy_sum = float(np.sum(policy))
+        if not np.isfinite(policy_sum) or policy_sum <= 0:
+            stats["skipped_policy"] += 1
             continue  # Skip positions with no policy
+        policy = policy / policy_sum
 
         # Value from position evaluation (best_q) or game result
         # best_q is the MCTS-backed evaluation, result_q is game outcome
@@ -547,20 +571,26 @@ def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndar
         if record['side_to_move'] == 1:  # Black to move
             value = -value
 
+        if not np.isfinite(value):
+            stats["nan_value"] += 1
+            continue
+
         # Clamp to [-1, 1]
         value = max(-1.0, min(1.0, value))
 
         boards_list.append(board)
         policies_list.append(policy)
         values_list.append(value)
+        stats["kept"] += 1
 
     if not boards_list:
-        return None, None, None
+        return None, None, None, stats
 
     return (
         np.array(boards_list, dtype=np.float32),
         np.array(policies_list, dtype=np.float32),
-        np.array(values_list, dtype=np.float32)
+        np.array(values_list, dtype=np.float32),
+        stats
     )
 
 
@@ -834,7 +864,34 @@ def download_and_process_t80(
                             desc="Processing chunks"
                         ))
 
-                    for boards, policies, values in results:
+                    tar_total_records = 0
+                    tar_kept_records = 0
+                    tar_skipped_record = 0
+                    tar_skipped_board = 0
+                    tar_skipped_policy = 0
+                    tar_nan_value = 0
+                    tar_versions = set()
+                    tar_policy_sizes = set()
+                    tar_record_sizes = set()
+                    tar_offsets = set()
+
+                    for boards, policies, values, stats in results:
+                        if stats:
+                            tar_total_records += stats.get("total_records", 0)
+                            tar_kept_records += stats.get("kept", 0)
+                            tar_skipped_record += stats.get("skipped_record", 0)
+                            tar_skipped_board += stats.get("skipped_board", 0)
+                            tar_skipped_policy += stats.get("skipped_policy", 0)
+                            tar_nan_value += stats.get("nan_value", 0)
+                            if stats.get("version") is not None:
+                                tar_versions.add(stats.get("version"))
+                            if stats.get("policy_size") is not None:
+                                tar_policy_sizes.add(stats.get("policy_size"))
+                            if stats.get("record_size") is not None:
+                                tar_record_sizes.add(stats.get("record_size"))
+                            if stats.get("offset") is not None:
+                                tar_offsets.add(stats.get("offset"))
+
                         if boards is not None:
                             all_boards.append(boards)
                             all_policies.append(policies)
@@ -844,6 +901,19 @@ def download_and_process_t80(
                         # Check position limit
                         if num_positions and total_positions >= num_positions:
                             break
+                    layout_version = ", ".join(str(v) for v in sorted(tar_versions)) or "unknown"
+                    layout_policy = ", ".join(str(v) for v in sorted(tar_policy_sizes)) or "unknown"
+                    layout_record = ", ".join(str(v) for v in sorted(tar_record_sizes)) or "unknown"
+                    layout_offset = ", ".join(str(v) for v in sorted(tar_offsets)) or "unknown"
+                    print(
+                        f"  Records kept: {tar_kept_records:,}/{tar_total_records:,} "
+                        f"(bad_record {tar_skipped_record:,}, bad_board {tar_skipped_board:,}, "
+                        f"bad_policy {tar_skipped_policy:,}, bad_value {tar_nan_value:,})"
+                    )
+                    print(
+                        f"  Layout: v{layout_version}, policy={layout_policy}, "
+                        f"record={layout_record}, offset={layout_offset}"
+                    )
                 finally:
                     # Clean up temp files
                     for tmp_path in temp_files:
