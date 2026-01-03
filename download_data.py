@@ -13,6 +13,7 @@ Usage:
 import os
 import sys
 import argparse
+import json
 import numpy as np
 from tqdm import tqdm
 from typing import List, Optional, Tuple
@@ -28,6 +29,41 @@ PIECE_TO_PLANE = {
     'P': 0, 'N': 1, 'B': 2, 'R': 3, 'Q': 4, 'K': 5,  # White pieces
     'p': 6, 'n': 7, 'b': 8, 'r': 9, 'q': 10, 'k': 11,  # Black pieces
 }
+
+
+def _save_npz_chunk(output_dir: str, name: str, boards: np.ndarray,
+                    policies: np.ndarray, values: np.ndarray, compress: bool) -> str:
+    chunk_path = os.path.join(output_dir, name)
+    if compress:
+        np.savez_compressed(chunk_path, boards=boards, policies=policies, values=values)
+    else:
+        np.savez(chunk_path, boards=boards, policies=policies, values=values)
+    return chunk_path
+
+
+def _maybe_write_metadata_cache(output_dir: str, files_info: List[dict],
+                                board_shape: Tuple[int, int, int],
+                                policy_shape: Tuple[int]) -> None:
+    if not files_info:
+        return
+
+    disk_files = [f for f in os.listdir(output_dir) if f.endswith('.npz')]
+    cached_files = {f['name'] for f in files_info}
+    if set(disk_files) != cached_files:
+        print("Skipping metadata cache (output directory contains other .npz files).")
+        return
+
+    cache_path = os.path.join(output_dir, "_metadata.json")
+    cache = {
+        'files': files_info,
+        'board_shape': list(board_shape),
+        'policy_shape': list(policy_shape),
+    }
+    try:
+        with open(cache_path, 'w') as f:
+            json.dump(cache, f)
+    except Exception:
+        print("Warning: Failed to write metadata cache.")
 
 
 def fast_parse_fen(fen: str, tensor: np.ndarray) -> bool:

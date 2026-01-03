@@ -6,6 +6,14 @@ This dataset has 316M positions with:
 - Centipawn evaluation (VALUE TARGET - what we need!)
 - Best move line (POLICY TARGET)
 
+Dataset fields:
+- fen: Chess position in FEN notation
+- line: Principal variation in UCI format (e.g., "e2e4 e7e5 g1f3")
+- cp: Centipawn evaluation (-20000 to 20000), None if mate
+- mate: Mate in N moves, None if not mate
+- depth: Search depth
+- knodes: Kilo-nodes searched
+
 This fixes the value head training problem - instead of noisy game outcomes,
 we get direct Stockfish evaluations for each position.
 """
@@ -15,7 +23,6 @@ import numpy as np
 from tqdm import tqdm
 import chess
 from datasets import load_dataset
-from concurrent.futures import ProcessPoolExecutor
 import multiprocessing as mp
 
 from data.encoder import BoardEncoder
@@ -48,39 +55,35 @@ def parse_uci_move(move_str: str) -> chess.Move:
 
 
 def process_batch(batch, encoder):
-    """Process a batch of positions from the dataset"""
+    """Process a batch of positions from the dataset
+
+    Dataset fields:
+    - fen: position
+    - line: PV string like "e2e4 e7e5 g1f3"
+    - cp: centipawn eval (None if mate)
+    - mate: mate in N (None if not mate)
+    """
     boards = []
     policies = []
     values = []
 
     for i in range(len(batch['fen'])):
         fen = batch['fen'][i]
-
-        # Get evaluation
-        eval_data = batch['evals'][i]
-        if not eval_data or len(eval_data) == 0:
-            continue
-
-        # Get the first (and usually best) evaluation
-        first_eval = eval_data[0]
-        pvs = first_eval.get('pvs', [])
-        if not pvs:
-            continue
-
-        pv = pvs[0]  # Principal variation
+        line = batch['line'][i]
+        cp = batch['cp'][i]
+        mate = batch['mate'][i]
 
         # Get centipawn evaluation or mate score
-        if 'cp' in pv:
-            cp = pv['cp']
-        elif 'mate' in pv:
+        if cp is not None:
+            eval_cp = cp
+        elif mate is not None:
             # Convert mate to high centipawn value
-            mate_in = pv['mate']
-            cp = 10000 if mate_in > 0 else -10000
+            eval_cp = 10000 if mate > 0 else -10000
         else:
+            # No evaluation available
             continue
 
         # Get best move from the line
-        line = pv.get('line', '')
         if not line:
             continue
 
@@ -91,6 +94,11 @@ def process_batch(batch, encoder):
         best_move_uci = moves[0]
 
         try:
+            # FEN from this dataset is partial (no move counters)
+            # Add default move counters
+            if fen.count(' ') == 3:
+                fen = fen + ' 0 1'
+
             board = chess.Board(fen)
 
             # Parse the best move
@@ -109,10 +117,8 @@ def process_batch(batch, encoder):
             policy[move_idx] = 1.0
 
             # Convert centipawn to win probability
-            # Note: eval is from white's perspective, we want current player's perspective
-            value = cp_to_winrate(cp)
-            if board.turn == chess.BLACK:
-                value = -value
+            # Note: eval is from side-to-move's perspective in this dataset
+            value = cp_to_winrate(eval_cp)
 
             boards.append(board_tensor)
             policies.append(policy)
@@ -173,10 +179,12 @@ def download_lichess_evaluated(
     total_positions = 0
     chunk_idx = 0
 
-    # Process in batches
+    # Process in batches - now with correct field names
     batch_data = {
         'fen': [],
-        'evals': [],
+        'line': [],
+        'cp': [],
+        'mate': [],
     }
 
     pbar = tqdm(total=num_positions, desc="Processing positions")
@@ -186,7 +194,9 @@ def download_lichess_evaluated(
             break
 
         batch_data['fen'].append(item['fen'])
-        batch_data['evals'].append(item['evals'])
+        batch_data['line'].append(item['line'])
+        batch_data['cp'].append(item['cp'])
+        batch_data['mate'].append(item['mate'])
 
         # Process when batch is full
         if len(batch_data['fen']) >= 10000:
@@ -203,7 +213,7 @@ def download_lichess_evaluated(
                 pbar.update(new_positions)
 
             # Reset batch
-            batch_data = {'fen': [], 'evals': []}
+            batch_data = {'fen': [], 'line': [], 'cp': [], 'mate': []}
 
             # Save chunk if we have enough
             current_size = sum(len(b) for b in all_boards)
