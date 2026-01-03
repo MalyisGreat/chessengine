@@ -256,7 +256,11 @@ class ChessLoss(nn.Module):
     """
     Combined loss function for chess network
 
-    Total loss = policy_weight * cross_entropy(policy) + value_weight * mse(value)
+    Total loss = policy_weight * policy_loss + value_weight * mse(value)
+
+    Policy loss modes:
+    - Hard targets (indices): Cross-entropy loss
+    - Soft targets (distributions): KL divergence for better training with MCTS data
     """
 
     def __init__(
@@ -268,8 +272,9 @@ class ChessLoss(nn.Module):
         super().__init__()
         self.policy_weight = policy_weight
         self.value_weight = value_weight
+        self.label_smoothing = label_smoothing
 
-        self.policy_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+        self.ce_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
         self.value_loss = nn.MSELoss()
 
     def forward(
@@ -285,16 +290,24 @@ class ChessLoss(nn.Module):
         Args:
             policy_logits: Predicted move logits (batch, num_moves)
             value_pred: Predicted value (batch,)
-            policy_target: Target move probabilities (batch, num_moves)
+            policy_target: Target - either indices (batch,) or soft distribution (batch, num_moves)
             value_target: Target value (batch,)
 
         Returns:
             Tuple of (total_loss, policy_loss, value_loss)
         """
-        # Policy loss - use cross entropy with soft targets
-        # Convert soft targets to hard targets for standard cross entropy
-        policy_target_idx = policy_target.argmax(dim=-1)
-        p_loss = self.policy_loss(policy_logits, policy_target_idx)
+        # Policy loss - different handling for hard vs soft targets
+        if policy_target.dim() == 1:
+            # Hard targets (indices) - use cross-entropy
+            p_loss = self.ce_loss(policy_logits, policy_target.long())
+        else:
+            # Soft targets (probability distribution) - use KL divergence
+            # This is the key improvement for T80 data with MCTS visit counts
+            log_probs = F.log_softmax(policy_logits, dim=-1)
+            # KL(target || predicted) = sum(target * log(target/predicted))
+            # = sum(target * log(target)) - sum(target * log(predicted))
+            # We minimize -sum(target * log(predicted)) which is cross-entropy with soft targets
+            p_loss = -torch.sum(policy_target * log_probs, dim=-1).mean()
 
         # Value loss
         v_loss = self.value_loss(value_pred, value_target)
@@ -345,12 +358,12 @@ if __name__ == "__main__":
     x = torch.randn(batch_size, 18, 8, 8)
 
     policy, value = model(x)
-    print(f"Policy shape: {policy.shape}")  # (4, 1858)
+    print(f"Policy shape: {policy.shape}")  # (batch, num_moves)
     print(f"Value shape: {value.shape}")    # (4,)
 
     # Test loss
     loss_fn = ChessLoss()
-    policy_target = torch.zeros(batch_size, 1858)
+    policy_target = torch.zeros(batch_size, model.policy_head.fc.out_features)
     policy_target[:, 0] = 1  # One-hot
     value_target = torch.tensor([1.0, -1.0, 0.0, 0.5])
 

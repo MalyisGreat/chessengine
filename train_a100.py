@@ -5,9 +5,15 @@ Complete Training Pipeline for 1x A100 GPU
 This script handles EVERYTHING:
 1. Installs all dependencies
 2. Downloads and installs Stockfish binary
-3. Downloads Lichess evaluated positions (with REAL Stockfish evals)
+3. Downloads Lc0 T80 training data (best AlphaZero-style dataset)
 4. Trains the chess engine
 5. Runs benchmarks
+
+The T80 dataset advantages:
+- Soft policy targets (MCTS visit distribution, not just best move)
+- Positions from ~3200 ELO self-play (consistent quality)
+- Native binary format (fast loading, no parsing)
+- Better training signal for AlphaZero-style networks
 
 Usage on RunPod:
     cd chess_engine
@@ -15,7 +21,7 @@ Usage on RunPod:
 
 Expected time: ~2-3 hours total
 - Setup: ~5 min
-- Download/process: ~30-60 min
+- Download: ~20-40 min (direct binary download, no parsing!)
 - Training: ~1.5-2 hours
 """
 
@@ -173,18 +179,23 @@ Examples:
     # Full training run (50M positions, 3 epochs)
     python train_a100.py
 
-    # Quick test (1M positions, 1 epoch)
-    python train_a100.py --positions 1000000 --epochs 1
+    # Quick test (5M positions, 1 epoch)
+    python train_a100.py --positions 5000000 --epochs 1
 
     # Resume with existing data
     python train_a100.py --skip-download
 
     # Include benchmark at the end
     python train_a100.py --benchmark
+
+    # Use Lichess data instead of T80
+    python train_a100.py --dataset lichess
 """
     )
     parser.add_argument("--positions", type=int, default=50_000_000,
                         help="Number of training positions (default: 50M)")
+    parser.add_argument("--num-files", type=int, default=20,
+                        help="Number of T80 .tar files to download (default: 20, ~50M positions)")
     parser.add_argument("--epochs", type=int, default=3,
                         help="Training epochs (default: 3)")
     parser.add_argument("--batch-size", type=int, default=8192,
@@ -195,8 +206,11 @@ Examples:
                         help="Skip data download (use existing data)")
     parser.add_argument("--skip-install", action="store_true",
                         help="Skip dependency installation")
-    parser.add_argument("--data-dir", type=str, default="./data/lichess_eval",
-                        help="Data directory")
+    parser.add_argument("--data-dir", type=str, default="./data/t80",
+                        help="Data directory (default: ./data/t80)")
+    parser.add_argument("--dataset", type=str, default="t80",
+                        choices=["t80", "lichess"],
+                        help="Dataset to use (default: t80)")
     parser.add_argument("--benchmark", action="store_true",
                         help="Run benchmark after training")
 
@@ -209,17 +223,22 @@ Examples:
     ║  This script handles EVERYTHING:                              ║
     ║  1. Install dependencies                                      ║
     ║  2. Download Stockfish binary                                 ║
-    ║  3. Download Lichess evaluated positions                      ║
+    ║  3. Download Lc0 T80 training data                            ║
     ║  4. Train the model                                           ║
     ║  5. Benchmark (optional)                                      ║
     ║                                                               ║
-    ║  Dataset: 316M positions with REAL Stockfish evaluations      ║
-    ║  This fixes the value head training problem!                  ║
+    ║  T80 Dataset: SOFT POLICY TARGETS from MCTS visits            ║
+    ║  - Positions from 3200+ ELO self-play                         ║
+    ║  - Better than hard targets (best move only)                  ║
+    ║  - Native binary format = FAST loading                        ║
     ╚═══════════════════════════════════════════════════════════════╝
     """)
 
     print(f"Configuration:")
+    print(f"  Dataset:      {args.dataset.upper()}")
     print(f"  Positions:    {args.positions:,}")
+    if args.dataset == "t80":
+        print(f"  Num files:    {args.num_files} (~2-3M positions each)")
     print(f"  Epochs:       {args.epochs}")
     print(f"  Batch size:   {args.batch_size}")
     print(f"  Learning rate: {args.lr}")
@@ -237,20 +256,37 @@ Examples:
 
     # Step 2: Download training data
     if not args.skip_download:
-        run_command(
-            f"{sys.executable} download_lichess_eval.py "
-            f"--output {args.data_dir} "
-            f"--positions {args.positions} "
-            f"--batch-size 1000000 "  # Save every 1M positions (fewer files)
-            f"--no-compress",  # Faster saves, larger files
-            "Step 2/4: Downloading Lichess evaluated positions"
-        )
+        if args.dataset == "t80":
+            # Download T80 data (Lc0 training data - best for AlphaZero-style)
+            run_command(
+                f"{sys.executable} download_t80.py "
+                f"--output {args.data_dir} "
+                f"--num-files {args.num_files} "
+                f"--positions {args.positions}",
+                "Step 2/4: Downloading Lc0 T80 training data"
+            )
 
-        # Verify
-        run_command(
-            f"{sys.executable} download_lichess_eval.py --output {args.data_dir} --verify",
-            "Verifying dataset"
-        )
+            # Verify
+            run_command(
+                f"{sys.executable} download_t80.py --output {args.data_dir} --verify",
+                "Verifying T80 dataset"
+            )
+        else:
+            # Download Lichess evaluated positions (fallback)
+            run_command(
+                f"{sys.executable} download_lichess_eval.py "
+                f"--output {args.data_dir} "
+                f"--positions {args.positions} "
+                f"--batch-size 1000000 "
+                f"--no-compress "
+                f"--compact-policy",
+                "Step 2/4: Downloading Lichess evaluated positions"
+            )
+
+            run_command(
+                f"{sys.executable} download_lichess_eval.py --output {args.data_dir} --verify",
+                "Verifying Lichess dataset"
+            )
     else:
         print("\n[Skipping download - using existing data]")
 
@@ -286,6 +322,10 @@ Examples:
     ║                     TRAINING COMPLETE!                        ║
     ╠═══════════════════════════════════════════════════════════════╣
     ║  Model saved to: ./outputs/chess_engine_v1/                   ║
+    ║                                                               ║
+    ║  Trained on Lc0 T80 data with SOFT POLICY TARGETS             ║
+    ║  - Policy head learned full MCTS visit distribution           ║
+    ║  - Value head learned position evaluations                    ║
     ║                                                               ║
     ║  Checkpoints:                                                 ║
     ║    - checkpoint_best.pt  (lowest validation loss)             ║

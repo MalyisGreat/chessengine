@@ -90,7 +90,10 @@ def compute_metrics(policy_logits: torch.Tensor, value_pred: torch.Tensor,
     with torch.no_grad():
         # Policy accuracy (top-1)
         policy_pred = policy_logits.argmax(dim=-1)
-        policy_target_idx = policy_targets.argmax(dim=-1)
+        if policy_targets.dim() == 1:
+            policy_target_idx = policy_targets.long()
+        else:
+            policy_target_idx = policy_targets.argmax(dim=-1)
         policy_acc_top1 = (policy_pred == policy_target_idx).float().mean().item()
 
         # Policy accuracy (top-5)
@@ -122,6 +125,7 @@ class Trainer:
         rank: int = 0,
         local_rank: int = 0,
         world_size: int = 1,
+        policy_size: Optional[int] = None,
     ):
         self.config = config
         self.rank = rank
@@ -140,10 +144,13 @@ class Trainer:
         if self.is_main:
             self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Initialize encoder (needed for model size and evaluation)
+        # Initialize encoder (needed for evaluation)
         self.encoder = BoardEncoder()
+
+        # Policy size - can be different from encoder (e.g., 1858 for T80, 1968 for our encoder)
+        self.policy_size = policy_size or self.encoder.num_moves
         if self.is_main:
-            print(f"Encoder num_moves: {self.encoder.num_moves}")
+            print(f"Model policy size: {self.policy_size}")
 
         # Initialize components
         self._setup_model()
@@ -159,12 +166,13 @@ class Trainer:
 
     def _setup_model(self):
         """Initialize model"""
-        # Use encoder's actual num_moves for policy head size
+        # Use policy_size which can be auto-detected from dataset
+        # (1858 for Lc0 T80 data, 1968 for our encoder)
         self.model = ChessNetwork(
             num_blocks=self.config.model.num_blocks,
             num_filters=self.config.model.num_filters,
             input_planes=self.config.model.input_planes,
-            num_moves=self.encoder.num_moves,  # Use encoder's count, not config
+            num_moves=self.policy_size,
             se_ratio=self.config.model.se_ratio,
         ).to(self.device)
 
@@ -678,6 +686,12 @@ def main():
         default="./outputs",
         help="Output directory",
     )
+    parser.add_argument(
+        "--policy-size",
+        type=int,
+        default=None,
+        help="Policy output size (auto-detected from data if not specified)",
+    )
 
     args = parser.parse_args()
 
@@ -715,6 +729,11 @@ def main():
             print(f"Loading data from {args.data}...")
 
         dataset = ChessDataset(args.data, augment=config.data.random_flip)
+
+        # Auto-detect policy size from dataset or use CLI arg
+        policy_size = args.policy_size or dataset.policy_size
+        if is_main_process(rank):
+            print(f"Policy size: {policy_size} (Lc0=1858, default=1968)")
 
         # Split into train/val
         val_size = int(len(dataset) * config.training.val_split)
@@ -761,6 +780,7 @@ def main():
             rank=rank,
             local_rank=local_rank,
             world_size=world_size,
+            policy_size=policy_size,
         )
 
         # Resume if specified

@@ -27,7 +27,9 @@ class ChessDataset(Dataset):
     """
     PyTorch Dataset for chess positions
 
-    Loads pre-processed numpy arrays or processes PGN files on the fly
+    Loads pre-processed numpy arrays or processes PGN files on the fly.
+    Supports both hard targets (policy_idx) and soft targets (policies).
+    Supports different policy sizes (1858 for Lc0, 1968 for our encoder).
     """
 
     def __init__(
@@ -46,6 +48,9 @@ class ChessDataset(Dataset):
         """
         self.encoder = encoder or BoardEncoder()
         self.augment = augment
+        self.policies = None
+        self.policy_idx = None
+        self.policy_size = None  # Will be detected from data
 
         if os.path.isfile(data_path) and data_path.endswith('.npz'):
             self._load_single_npz(data_path, max_positions)
@@ -54,18 +59,39 @@ class ChessDataset(Dataset):
         else:
             raise ValueError(f"Invalid data path: {data_path}")
 
-        print(f"Loaded {len(self)} positions")
+        # Detect policy size
+        if self.policies is not None:
+            self.policy_size = self.policies.shape[1]
+        elif self.policy_idx is not None:
+            self.policy_size = self.encoder.num_moves
+
+        # Disable augmentation for non-standard policy sizes (Lc0 1858)
+        # because flip_policy assumes our 1968-move encoding
+        if self.policy_size != self.encoder.num_moves:
+            if self.augment:
+                print(f"Note: Disabling augmentation for policy size {self.policy_size}")
+                self.augment = False
+
+        print(f"Loaded {len(self)} positions (policy_size={self.policy_size})")
 
     def _load_single_npz(self, path: str, max_positions: Optional[int] = None):
         """Load a single .npz file"""
         data = np.load(path)
         self.boards = data['boards']
-        self.policies = data['policies']
+        if 'policy_idx' in data:
+            self.policy_idx = data['policy_idx'].astype(np.int32, copy=False)
+            self.policies = None
+        else:
+            self.policies = data['policies']
+            self.policy_idx = None
         self.values = data['values']
 
         if max_positions and len(self.boards) > max_positions:
             self.boards = self.boards[:max_positions]
-            self.policies = self.policies[:max_positions]
+            if self.policies is not None:
+                self.policies = self.policies[:max_positions]
+            if self.policy_idx is not None:
+                self.policy_idx = self.policy_idx[:max_positions]
             self.values = self.values[:max_positions]
 
     def _load_metadata_cache(self, path: str) -> Optional[Dict]:
@@ -90,13 +116,15 @@ class ChessDataset(Dataset):
         except:
             return None
 
-    def _save_metadata_cache(self, path: str, files_info: List[Dict]):
+    def _save_metadata_cache(self, path: str, files_info: List[Dict],
+                             policy_mode: str, policy_shape: Optional[Tuple[int, ...]]):
         """Save file metadata to cache"""
         cache_path = os.path.join(path, "_metadata.json")
         cache = {
             'files': files_info,
             'board_shape': [18, 8, 8],
-            'policy_shape': [self.encoder.num_moves],
+            'policy_shape': list(policy_shape) if policy_shape else [],
+            'policy_mode': policy_mode,
         }
         try:
             with open(cache_path, 'w') as f:
@@ -114,6 +142,9 @@ class ChessDataset(Dataset):
         # Try to load from cache first (instant!)
         cache = self._load_metadata_cache(path)
 
+        policy_mode = None
+        policy_shape = None
+
         if cache is not None:
             print("Using cached metadata (instant load)...")
             valid_files = [e['name'] for e in cache['files']]
@@ -121,6 +152,11 @@ class ChessDataset(Dataset):
             total_positions = sum(file_sizes)
             board_shape = tuple(cache.get('board_shape', [18, 8, 8]))
             policy_shape = tuple(cache.get('policy_shape', [self.encoder.num_moves]))
+            policy_mode = cache.get('policy_mode')
+            if policy_mode is None:
+                sample = np.load(os.path.join(path, valid_files[0]))
+                policy_mode = 'index' if 'policy_idx' in sample else 'one_hot'
+                sample.close()
         else:
             # Phase 1: Scan files to get total size, skip corrupted files
             print("Scanning data files (first run, will be cached)...")
@@ -136,8 +172,17 @@ class ChessDataset(Dataset):
                     data = np.load(file_path)
                     # Verify all arrays are readable
                     n = len(data['boards'])
-                    _ = data['policies'].shape
+                    if 'policy_idx' in data:
+                        file_policy_mode = 'index'
+                        _ = data['policy_idx'].shape
+                    else:
+                        file_policy_mode = 'one_hot'
+                        _ = data['policies'].shape
                     _ = data['values'].shape
+                    if policy_mode is None:
+                        policy_mode = file_policy_mode
+                    elif policy_mode != file_policy_mode:
+                        raise ValueError(f"Mixed policy formats in {path}")
                     valid_files.append(f)
                     file_sizes.append(n)
                     total_positions += n
@@ -163,14 +208,17 @@ class ChessDataset(Dataset):
             if not valid_files:
                 raise ValueError(f"No valid .npz files found in {path}")
 
-            # Save cache for next run
-            self._save_metadata_cache(path, files_info)
-
             # Get shapes from first file
             sample = np.load(os.path.join(path, valid_files[0]))
             board_shape = sample['boards'].shape[1:]
-            policy_shape = sample['policies'].shape[1:]
+            if policy_mode == 'index':
+                policy_shape = None
+            else:
+                policy_shape = sample['policies'].shape[1:]
             sample.close()
+
+            # Save cache for next run
+            self._save_metadata_cache(path, files_info, policy_mode, policy_shape)
 
         if max_positions:
             total_positions = min(total_positions, max_positions)
@@ -180,7 +228,12 @@ class ChessDataset(Dataset):
         # Phase 2: Pre-allocate arrays (single allocation - very fast)
         print("Allocating memory...")
         self.boards = np.zeros((total_positions, *board_shape), dtype=np.float32)
-        self.policies = np.zeros((total_positions, *policy_shape), dtype=np.float32)
+        if policy_mode == 'index':
+            self.policy_idx = np.zeros(total_positions, dtype=np.int32)
+            self.policies = None
+        else:
+            self.policies = np.zeros((total_positions, *policy_shape), dtype=np.float32)
+            self.policy_idx = None
         self.values = np.zeros(total_positions, dtype=np.float32)
 
         # Phase 3: Load data directly into pre-allocated arrays (fast copy)
@@ -198,7 +251,10 @@ class ChessDataset(Dataset):
 
                 # Direct copy into pre-allocated arrays (no Python list overhead)
                 self.boards[offset:offset + n] = data['boards'][:n]
-                self.policies[offset:offset + n] = data['policies'][:n]
+                if self.policy_idx is not None:
+                    self.policy_idx[offset:offset + n] = data['policy_idx'][:n]
+                else:
+                    self.policies[offset:offset + n] = data['policies'][:n]
                 self.values[offset:offset + n] = data['values'][:n]
 
                 data.close()
@@ -226,17 +282,28 @@ class ChessDataset(Dataset):
             Tuple of (board_tensor, policy_tensor, value_tensor)
         """
         board = self.boards[idx]
-        policy = self.policies[idx]
+        if self.policy_idx is not None:
+            policy = int(self.policy_idx[idx])
+        else:
+            policy = self.policies[idx]
         value = self.values[idx]
 
         # Data augmentation: random horizontal flip (board + policy)
         if self.augment and np.random.random() > 0.5:
             board = self.encoder.flip_board(board)
-            policy = self.encoder.flip_policy(policy)
+            if self.policy_idx is not None:
+                policy = int(self.encoder.flip_move_idx[policy])
+            else:
+                policy = self.encoder.flip_policy(policy)
+
+        if self.policy_idx is not None:
+            policy_tensor = torch.tensor(policy, dtype=torch.long)
+        else:
+            policy_tensor = torch.from_numpy(policy)
 
         return (
             torch.from_numpy(board),
-            torch.from_numpy(policy),
+            policy_tensor,
             torch.tensor(value, dtype=torch.float32),
         )
 
