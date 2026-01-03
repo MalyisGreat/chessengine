@@ -43,7 +43,6 @@ import threading
 import time
 
 # Lc0 V6 format constants
-V6_STRUCT_SIZE = 8356
 V6_VERSION = 6
 NUM_POLICY_MOVES = 1858  # Lc0's policy size
 
@@ -258,7 +257,35 @@ def _download_progress_reporter(progress: DownloadProgress, stop_event: threadin
         )
 
 
-def parse_v6_record(data: bytes) -> Optional[dict]:
+def _v6_record_size(policy_size: int) -> int:
+    return policy_size * 4 + 832 + 92
+
+
+def _detect_v6_layout(data: bytes) -> Tuple[int, int, int]:
+    candidates = [NUM_POLICY_MOVES, 1968]
+    max_offset = min(64, max(0, len(data) - 4))
+    for policy_size in candidates:
+        record_size = _v6_record_size(policy_size)
+        if len(data) < record_size:
+            continue
+        for offset in range(0, max_offset + 1, 4):
+            version, = struct.unpack_from('<I', data, offset)
+            if version != V6_VERSION:
+                continue
+            num_records = (len(data) - offset) // record_size
+            if num_records <= 0:
+                continue
+            sample = min(5, num_records)
+            ok = 0
+            for i in range(sample):
+                if struct.unpack_from('<I', data, offset + i * record_size)[0] == V6_VERSION:
+                    ok += 1
+            if ok == sample:
+                return policy_size, record_size, offset
+    return NUM_POLICY_MOVES, _v6_record_size(NUM_POLICY_MOVES), 0
+
+
+def parse_v6_record(data: bytes, policy_size: int) -> Optional[dict]:
     """
     Parse a single V6 training record (8356 bytes).
 
@@ -272,7 +299,7 @@ def parse_v6_record(data: bytes) -> Optional[dict]:
         - side_to_move: 0 or 1
         - rule50: fifty-move counter
     """
-    if len(data) != V6_STRUCT_SIZE:
+    if len(data) != _v6_record_size(policy_size):
         return None
 
     offset = 0
@@ -285,8 +312,8 @@ def parse_v6_record(data: bytes) -> Optional[dict]:
         return None
 
     # Probabilities: 1858 floats (7432 bytes)
-    probabilities = np.frombuffer(data, dtype=np.float32, count=1858, offset=offset)
-    offset += 1858 * 4
+    probabilities = np.frombuffer(data, dtype=np.float32, count=policy_size, offset=offset)
+    offset += policy_size * 4
 
     # Planes: 104 uint64 (832 bytes) - raw bitboards
     planes = np.frombuffer(data, dtype=np.uint64, count=104, offset=offset)
@@ -456,11 +483,16 @@ def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndar
     with gzip.open(chunk_path, 'rb') as f:
         data = f.read()
 
-    num_records = len(data) // V6_STRUCT_SIZE
+    policy_size, record_size, offset = _detect_v6_layout(data)
+    num_records = (len(data) - offset) // record_size
+
+    if num_records <= 0:
+        return None, None, None
 
     for i in range(num_records):
-        record_data = data[i * V6_STRUCT_SIZE:(i + 1) * V6_STRUCT_SIZE]
-        record = parse_v6_record(record_data)
+        start = offset + i * record_size
+        record_data = data[start:start + record_size]
+        record = parse_v6_record(record_data, policy_size)
 
         if record is None:
             continue
@@ -480,8 +512,8 @@ def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndar
         policy = record['probabilities']
 
         # Normalize policy to sum to 1
-        policy_sum = policy.sum()
-        if policy_sum > 0:
+        policy_sum = float(np.sum(policy))
+        if np.isfinite(policy_sum) and policy_sum > 0:
             policy = policy / policy_sum
         else:
             continue  # Skip positions with no policy
@@ -846,12 +878,13 @@ def download_and_process_t80(
         )
 
         print(f"\n  Saved {chunk_path} ({sum(len(b) for b in all_boards):,} positions)")
+        chunk_idx += 1
 
     print(f"\n{'='*60}")
     print("DOWNLOAD COMPLETE")
     print(f"{'='*60}")
     print(f"Total positions: {total_positions:,}")
-    print(f"Chunks saved: {chunk_idx + 1}")
+    print(f"Chunks saved: {chunk_idx}")
     print(f"Output directory: {output_dir}")
     print(f"\nTo train:")
     print(f"  python train.py --data {output_dir} --policy-size 1858")
