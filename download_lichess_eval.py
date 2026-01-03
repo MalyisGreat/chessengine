@@ -19,6 +19,7 @@ we get direct Stockfish evaluations for each position.
 """
 
 import os
+import json
 import numpy as np
 from tqdm import tqdm
 import chess
@@ -44,6 +45,30 @@ def cp_to_winrate(cp: int) -> float:
     cp = max(-10000, min(10000, cp))
     winrate = 2.0 / (1.0 + 10.0 ** (-cp / 400.0)) - 1.0
     return winrate
+
+
+def _maybe_write_metadata_cache(output_dir: str, files_info: list,
+                                board_shape: tuple, policy_shape: tuple) -> None:
+    if not files_info:
+        return
+
+    disk_files = [f for f in os.listdir(output_dir) if f.endswith('.npz')]
+    cached_files = {f['name'] for f in files_info}
+    if set(disk_files) != cached_files:
+        print("Skipping metadata cache (output directory contains other .npz files).")
+        return
+
+    cache_path = os.path.join(output_dir, "_metadata.json")
+    cache = {
+        'files': files_info,
+        'board_shape': list(board_shape),
+        'policy_shape': list(policy_shape),
+    }
+    try:
+        with open(cache_path, 'w') as f:
+            json.dump(cache, f)
+    except Exception:
+        print("Warning: Failed to write metadata cache.")
 
 
 def parse_uci_move(move_str: str) -> chess.Move:
@@ -141,6 +166,7 @@ def download_lichess_evaluated(
     num_positions: int = 50_000_000,
     batch_size: int = 100_000,
     streaming: bool = True,
+    compress: bool = True,
 ):
     """
     Download and process Lichess evaluated positions from HuggingFace
@@ -150,6 +176,7 @@ def download_lichess_evaluated(
         num_positions: Target number of positions (default 50M)
         batch_size: Positions per output file
         streaming: Use streaming mode (recommended for large dataset)
+        compress: Use compressed .npz files (smaller, slower)
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -178,6 +205,7 @@ def download_lichess_evaluated(
     all_values = []
     total_positions = 0
     chunk_idx = 0
+    files_info = []
 
     # Process in batches - now with correct field names
     batch_data = {
@@ -219,14 +247,29 @@ def download_lichess_evaluated(
             current_size = sum(len(b) for b in all_boards)
             if current_size >= batch_size:
                 # Concatenate and save
-                chunk_path = os.path.join(output_dir, f"chunk_{chunk_idx:04d}.npz")
-                np.savez_compressed(
-                    chunk_path,
-                    boards=np.concatenate(all_boards),
-                    policies=np.concatenate(all_policies),
-                    values=np.concatenate(all_values),
-                )
+                chunk_name = f"chunk_{chunk_idx:04d}.npz"
+                chunk_path = os.path.join(output_dir, chunk_name)
+                if compress:
+                    np.savez_compressed(
+                        chunk_path,
+                        boards=np.concatenate(all_boards),
+                        policies=np.concatenate(all_policies),
+                        values=np.concatenate(all_values),
+                    )
+                else:
+                    np.savez(
+                        chunk_path,
+                        boards=np.concatenate(all_boards),
+                        policies=np.concatenate(all_policies),
+                        values=np.concatenate(all_values),
+                    )
                 print(f"\n  Saved {chunk_path} ({current_size:,} positions)")
+
+                files_info.append({
+                    'name': chunk_name,
+                    'size': current_size,
+                    'mtime': os.path.getmtime(chunk_path),
+                })
 
                 chunk_idx += 1
                 all_boards = []
@@ -246,21 +289,42 @@ def download_lichess_evaluated(
 
     # Save remaining data
     if all_boards:
-        chunk_path = os.path.join(output_dir, f"chunk_{chunk_idx:04d}.npz")
+        chunk_name = f"chunk_{chunk_idx:04d}.npz"
+        chunk_path = os.path.join(output_dir, chunk_name)
         current_size = sum(len(b) for b in all_boards)
-        np.savez_compressed(
-            chunk_path,
-            boards=np.concatenate(all_boards),
-            policies=np.concatenate(all_policies),
-            values=np.concatenate(all_values),
-        )
+        if compress:
+            np.savez_compressed(
+                chunk_path,
+                boards=np.concatenate(all_boards),
+                policies=np.concatenate(all_policies),
+                values=np.concatenate(all_values),
+            )
+        else:
+            np.savez(
+                chunk_path,
+                boards=np.concatenate(all_boards),
+                policies=np.concatenate(all_policies),
+                values=np.concatenate(all_values),
+            )
         print(f"\n  Saved {chunk_path} ({current_size:,} positions)")
+        files_info.append({
+            'name': chunk_name,
+            'size': current_size,
+            'mtime': os.path.getmtime(chunk_path),
+        })
+
+    _maybe_write_metadata_cache(
+        output_dir,
+        files_info,
+        board_shape=(18, 8, 8),
+        policy_shape=(encoder.num_moves,),
+    )
 
     print(f"\n{'='*60}")
     print(f"DOWNLOAD COMPLETE")
     print(f"{'='*60}")
     print(f"Total positions: {total_positions:,}")
-    print(f"Chunks saved: {chunk_idx + 1}")
+    print(f"Chunks saved: {len(files_info)}")
     print(f"Output directory: {output_dir}")
     print(f"\nTo train:")
     print(f"  python train.py --data {output_dir}")
@@ -332,6 +396,8 @@ if __name__ == "__main__":
                         help="Verify existing dataset")
     parser.add_argument("--batch-size", type=int, default=100_000,
                         help="Positions per output file")
+    parser.add_argument("--no-compress", action="store_true",
+                        help="Save .npz without compression for faster writes (larger files)")
 
     args = parser.parse_args()
 
@@ -342,4 +408,5 @@ if __name__ == "__main__":
             output_dir=args.output,
             num_positions=args.positions,
             batch_size=args.batch_size,
+            compress=not args.no_compress,
         )

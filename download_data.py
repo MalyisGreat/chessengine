@@ -183,6 +183,7 @@ def download_lichess_evaluations(
     output_dir: str = "./data/train",
     num_positions: int = 10_000_000,
     batch_size: int = 100_000,
+    compress: bool = True,
 ) -> str:
     """
     Download pre-evaluated chess positions from Lichess/Hugging Face.
@@ -194,6 +195,7 @@ def download_lichess_evaluations(
         output_dir: Where to save processed data
         num_positions: Number of positions to download (default 10M)
         batch_size: Positions per .npz file
+        compress: Use compressed .npz files (smaller, slower)
 
     Returns:
         Path to output directory
@@ -250,13 +252,21 @@ def download_lichess_evaluations(
     policy_size = encoder.num_moves
     print(f"Policy size: {policy_size} (from encoder)")
 
+    files_info = []
+    total_positions = 0
+
     def save_chunk(boards_arr, values_arr, idx):
         """Save a chunk of data"""
         # NOTE: policies are zeros because this dataset has no move data
         # Training will only work for value head, not policy head
         policies = np.zeros((len(boards_arr), policy_size), dtype=np.float32)
-        chunk_path = os.path.join(output_dir, f"chunk_{idx:06d}.npz")
-        np.savez_compressed(chunk_path, boards=boards_arr, policies=policies, values=values_arr)
+        chunk_name = f"chunk_{idx:06d}.npz"
+        chunk_path = _save_npz_chunk(output_dir, chunk_name, boards_arr, policies, values_arr, compress)
+        files_info.append({
+            'name': chunk_name,
+            'size': len(boards_arr),
+            'mtime': os.path.getmtime(chunk_path),
+        })
 
     chunk_idx = 0
 
@@ -310,6 +320,7 @@ def download_lichess_evaluations(
             if valid_count > 0:
                 save_chunk(boards_arr[:valid_count], values_arr[:valid_count], chunk_idx)
                 chunk_idx += 1
+                total_positions += valid_count
 
             pbar.update(end - start)
 
@@ -318,8 +329,9 @@ def download_lichess_evaluations(
     else:
         # SLOW PATH: Streaming mode (network bound)
         pbar = tqdm(total=num_positions, desc="Processing positions (streaming)")
-        boards_list = []
-        values_list = []
+        boards_arr = np.zeros((batch_size, 18, 8, 8), dtype=np.float32)
+        values_arr = np.zeros(batch_size, dtype=np.float32)
+        count = 0
 
         for example in ds:
             fen = example['fen']
@@ -327,8 +339,8 @@ def download_lichess_evaluations(
             mate = example.get('mate')
 
             # Fast FEN parsing
-            tensor = np.zeros((18, 8, 8), dtype=np.float32)
-            if not fast_parse_fen(fen, tensor):
+            if not fast_parse_fen(fen, boards_arr[count]):
+                boards_arr[count] = 0
                 pbar.update(1)
                 continue
 
@@ -340,34 +352,33 @@ def download_lichess_evaluations(
             else:
                 value = 0.0
 
-            boards_list.append(tensor)
-            values_list.append(value)
+            values_arr[count] = value
+            count += 1
             pbar.update(1)
 
             # Save chunks as we go
-            if len(boards_list) >= batch_size:
-                boards_arr = np.array(boards_list[:batch_size])
-                values_arr = np.array(values_list[:batch_size])
+            if count >= batch_size:
                 save_chunk(boards_arr, values_arr, chunk_idx)
                 chunk_idx += 1
-                boards_list = boards_list[batch_size:]
-                values_list = values_list[batch_size:]
+                total_positions += count
+                boards_arr = np.zeros((batch_size, 18, 8, 8), dtype=np.float32)
+                values_arr = np.zeros(batch_size, dtype=np.float32)
+                count = 0
 
         pbar.close()
 
         # Save remaining
-        if boards_list:
-            boards_arr = np.array(boards_list)
-            values_arr = np.array(values_list)
-            save_chunk(boards_arr, values_arr, chunk_idx)
+        if count > 0:
+            save_chunk(boards_arr[:count], values_arr[:count], chunk_idx)
             chunk_idx += 1
+            total_positions += count
 
-    # Count total positions saved
-    total_positions = 0
-    for f in os.listdir(output_dir):
-        if f.endswith('.npz'):
-            data = np.load(os.path.join(output_dir, f))
-            total_positions += len(data['boards'])
+    _maybe_write_metadata_cache(
+        output_dir,
+        files_info,
+        board_shape=(18, 8, 8),
+        policy_shape=(policy_size,),
+    )
 
     print(f"\n{'='*60}")
     print(f"DOWNLOAD COMPLETE")
@@ -505,7 +516,7 @@ def _process_zip_file(args):
     import io
     from data.encoder import BoardEncoder
 
-    zip_path, min_elo, games_per_batch = args
+    zip_path, min_elo, positions_per_chunk = args
     encoder = BoardEncoder()
 
     all_results = []
@@ -517,94 +528,77 @@ def _process_zip_file(args):
                 if not name.endswith('.pgn'):
                     continue
 
-                # Read PGN content
-                with zf.open(name) as pgn_bytes:
-                    pgn_content = pgn_bytes.read().decode('utf-8', errors='ignore')
-
-                # Split into games
-                games = []
-                current_game = []
-                in_moves = False
-
-                for line in pgn_content.split('\n'):
-                    if line.startswith('[Event '):
-                        if current_game:
-                            games.append('\n'.join(current_game))
-                            current_game = []
-                        in_moves = False
-                    current_game.append(line)
-
-                    if not line.startswith('[') and line.strip():
-                        in_moves = True
-                    if in_moves and ('1-0' in line or '0-1' in line or '1/2-1/2' in line or '*' in line):
-                        if current_game:
-                            games.append('\n'.join(current_game))
-                            current_game = []
-                        in_moves = False
-
-                if current_game:
-                    games.append('\n'.join(current_game))
-
-                del pgn_content
-
                 # Process all games in this PGN file
                 boards = []
                 policies = []
                 values = []
 
-                for game_text in games:
-                    try:
-                        pgn_io = io.StringIO(game_text)
-                        game = chess.pgn.read_game(pgn_io)
+                with zf.open(name) as pgn_bytes:
+                    pgn_text = io.TextIOWrapper(pgn_bytes, encoding='utf-8', errors='ignore')
+
+                    while True:
+                        try:
+                            game = chess.pgn.read_game(pgn_text)
+                        except Exception:
+                            break
+
                         if game is None:
+                            break
+
+                        # Check ELO
+                        try:
+                            white_elo = int(game.headers.get('WhiteElo', '0'))
+                            black_elo = int(game.headers.get('BlackElo', '0'))
+                            if white_elo < min_elo or black_elo < min_elo:
+                                continue
+                        except ValueError:
                             continue
-                    except:
-                        continue
 
-                    # Check ELO
-                    try:
-                        white_elo = int(game.headers.get('WhiteElo', '0'))
-                        black_elo = int(game.headers.get('BlackElo', '0'))
-                        if white_elo < min_elo or black_elo < min_elo:
-                            continue
-                    except ValueError:
-                        continue
-
-                    # Get result
-                    result = game.headers.get('Result', '*')
-                    if result == '1-0':
-                        white_value, black_value = 1.0, -1.0
-                    elif result == '0-1':
-                        white_value, black_value = -1.0, 1.0
-                    elif result == '1/2-1/2':
-                        white_value, black_value = 0.0, 0.0
-                    else:
-                        continue
-
-                    # Process positions
-                    board = game.board()
-                    moves_list = list(game.mainline_moves())
-
-                    for move in moves_list[:-1]:
-                        board_tensor = encoder.encode_board(board)
-
-                        policy = np.zeros(encoder.num_moves, dtype=np.float32)
-                        move_idx = encoder.encode_move(move)
-                        if move_idx >= 0:
-                            policy[move_idx] = 1.0
+                        # Get result
+                        result = game.headers.get('Result', '*')
+                        if result == '1-0':
+                            white_value, black_value = 1.0, -1.0
+                        elif result == '0-1':
+                            white_value, black_value = -1.0, 1.0
+                        elif result == '1/2-1/2':
+                            white_value, black_value = 0.0, 0.0
                         else:
-                            board.push(move)
                             continue
 
-                        value = white_value if board.turn == chess.WHITE else black_value
+                        # Process positions
+                        board = game.board()
+                        prev_move = None
 
-                        boards.append(board_tensor)
-                        policies.append(policy)
-                        values.append(value)
+                        for move in game.mainline_moves():
+                            if prev_move is not None:
+                                board_tensor = encoder.encode_board(board)
 
-                        board.push(move)
+                                policy = np.zeros(encoder.num_moves, dtype=np.float32)
+                                move_idx = encoder.encode_move(prev_move)
+                                if move_idx >= 0:
+                                    policy[move_idx] = 1.0
 
-                    total_games += 1
+                                    value = white_value if board.turn == chess.WHITE else black_value
+
+                                    boards.append(board_tensor)
+                                    policies.append(policy)
+                                    values.append(value)
+
+                                board.push(prev_move)
+
+                            prev_move = move
+
+                        total_games += 1
+
+                        if positions_per_chunk and len(boards) >= positions_per_chunk:
+                            all_results.append((
+                                np.array(boards, dtype=np.float32),
+                                np.array(policies, dtype=np.float32),
+                                np.array(values, dtype=np.float32),
+                            ))
+                            boards = []
+                            policies = []
+                            values = []
 
                 if boards:
                     all_results.append((
@@ -626,6 +620,7 @@ def download_lichess_games(
     min_elo: int = 2200,
     num_workers: int = 0,  # 0 = auto-detect
     use_ram_disk: bool = False,  # Use /dev/shm for faster I/O
+    compress: bool = True,
 ) -> str:
     """
     Download Lichess Elite games with MOVES for policy training.
@@ -642,6 +637,7 @@ def download_lichess_games(
         min_elo: Minimum player ELO
         num_workers: Number of parallel workers (0 = auto)
         use_ram_disk: Use /dev/shm (RAM) for temp files (Linux only)
+        compress: Use compressed .npz files (smaller, slower)
 
     Returns:
         Path to output directory
@@ -682,6 +678,8 @@ def download_lichess_games(
     print(f"Parallel zip processors: {min(num_workers, 4)}")
     if use_ram_disk:
         print(f"RAM disk: ENABLED ({ram_disk_path})")
+    if not compress:
+        print("Compression: DISABLED (faster writes, larger files)")
     print(f"{'='*60}\n")
 
     encoder = BoardEncoder()
@@ -711,16 +709,17 @@ def download_lichess_games(
     # =========================================================================
     def download_worker():
         """Downloads files and queues them for processing."""
+        session = requests.Session()
         for filename in MONTHLY_FILES:
             zip_path = os.path.join(raw_dir, filename)
 
             if not os.path.exists(zip_path):
                 try:
                     url = f"{LICHESS_ELITE_BASE}{filename}"
-                    response = requests.get(url, stream=True, timeout=120)
+                    response = session.get(url, stream=True, timeout=120)
                     response.raise_for_status()
                     with open(zip_path, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=65536):
+                        for chunk in response.iter_content(chunk_size=1024 * 1024):
                             if chunk:
                                 f.write(chunk)
                 except Exception as e:
@@ -745,24 +744,34 @@ def download_lichess_games(
     total_positions = 0
     total_games = 0
     chunk_idx = 0
+    files_info = []
 
     def save_chunk():
         nonlocal chunk_idx, all_boards, all_policies, all_values
         if not all_boards:
             return
-        chunk_path = os.path.join(output_dir, f"chunk_{chunk_idx:06d}.npz")
-        np.savez_compressed(
-            chunk_path,
-            boards=np.concatenate(all_boards) if len(all_boards) > 1 else all_boards[0],
-            policies=np.concatenate(all_policies) if len(all_policies) > 1 else all_policies[0],
-            values=np.concatenate(all_values) if len(all_values) > 1 else all_values[0],
+        chunk_name = f"chunk_{chunk_idx:06d}.npz"
+        chunk_size = sum(len(b) for b in all_boards)
+        chunk_path = _save_npz_chunk(
+            output_dir,
+            chunk_name,
+            np.concatenate(all_boards) if len(all_boards) > 1 else all_boards[0],
+            np.concatenate(all_policies) if len(all_policies) > 1 else all_policies[0],
+            np.concatenate(all_values) if len(all_values) > 1 else all_values[0],
+            compress,
         )
+        files_info.append({
+            'name': chunk_name,
+            'size': chunk_size,
+            'mtime': os.path.getmtime(chunk_path),
+        })
         chunk_idx += 1
         all_boards = []
         all_policies = []
         all_values = []
 
     pbar = tqdm(total=num_positions, desc="Extracting positions")
+    positions_per_chunk = min(batch_size, 10000)
 
     # Process multiple zip files in parallel
     num_zip_workers = min(num_workers, 4)  # Max 4 parallel zip processors
@@ -776,7 +785,7 @@ def download_lichess_games(
             while not download_queue.empty() and len(pending_futures) < num_zip_workers:
                 try:
                     zip_path = download_queue.get_nowait()
-                    future = executor.submit(_process_zip_file, (zip_path, min_elo, 100))
+                    future = executor.submit(_process_zip_file, (zip_path, min_elo, positions_per_chunk))
                     pending_futures[future] = zip_path
                     files_submitted += 1
                 except queue.Empty:
@@ -849,6 +858,13 @@ def download_lichess_games(
 
     # Save remaining
     save_chunk()
+
+    _maybe_write_metadata_cache(
+        output_dir,
+        files_info,
+        board_shape=(18, 8, 8),
+        policy_shape=(encoder.num_moves,),
+    )
 
     # Cleanup RAM disk
     if use_ram_disk and ram_disk_path and os.path.exists(ram_disk_path):
@@ -1011,6 +1027,11 @@ Examples:
         action="store_true",
         help="Use /dev/shm (RAM) for temp files - faster I/O (Linux only)",
     )
+    parser.add_argument(
+        "--no-compress",
+        action="store_true",
+        help="Save .npz without compression for faster writes (larger files)",
+    )
 
     args = parser.parse_args()
 
@@ -1027,6 +1048,7 @@ Examples:
             batch_size=args.batch_size,
             num_workers=args.workers,
             use_ram_disk=args.ram_disk,
+            compress=not args.no_compress,
         )
 
     elif args.dataset == "lichess_eval":
@@ -1037,6 +1059,7 @@ Examples:
             output_dir=args.output,
             num_positions=args.positions,
             batch_size=args.batch_size,
+            compress=not args.no_compress,
         )
 
     elif args.dataset == "lichess_pgn":
