@@ -495,113 +495,12 @@ class Trainer:
             print("  [Stockfish not found - skipping evaluation]")
             return None
 
-        print(f"\n  Running {num_games} games vs Stockfish (skill 5) with search...")
+        print(f"\n  Running {num_games} games vs Stockfish (skill 5) - policy only...")
 
         try:
             # Get model for evaluation
             model = self.model.module if hasattr(self.model, 'module') else self.model
             model.eval()
-
-            # Create a temporary ChessEngine for search-based play
-            from engine.search import ChessEngine, SearchResult
-
-            # We need to create a ChessEngine that uses our current model
-            # Instead of loading from checkpoint, we'll do it manually
-            class EvalEngine:
-                """Lightweight engine wrapper for evaluation"""
-                def __init__(self, model, encoder, device, search_depth=3):
-                    self.model = model
-                    self.encoder = encoder
-                    self.device = device
-                    self.search_depth = search_depth
-                    self.tt = {}
-                    self.nodes_searched = 0
-
-                @torch.no_grad()
-                def evaluate(self, board):
-                    board_tensor = self.encoder.encode_board(board)
-                    board_tensor = torch.from_numpy(board_tensor).unsqueeze(0).to(self.device)
-                    policy_logits, value = self.model(board_tensor)
-                    policy_probs = torch.softmax(policy_logits, dim=-1).cpu().numpy()[0]
-                    return policy_probs, value.cpu().item()
-
-                def get_move_probs(self, board):
-                    policy_probs, _ = self.evaluate(board)
-                    move_probs = []
-                    for move in board.legal_moves:
-                        move_idx = self.encoder.encode_move(move)
-                        if move_idx >= 0:
-                            prob = policy_probs[move_idx]
-                            move_probs.append((move, prob))
-                    move_probs.sort(key=lambda x: x[1], reverse=True)
-                    return move_probs
-
-                def search(self, board, depth=None):
-                    """Alpha-beta search with NN evaluation"""
-                    depth = depth or self.search_depth
-                    self.nodes_searched = 0
-                    self.tt.clear()
-
-                    best_move = None
-                    best_score = -float('inf')
-
-                    for d in range(1, depth + 1):
-                        score, move = self._alpha_beta(board, d, -float('inf'), float('inf'), True)
-                        if move is not None:
-                            best_move = move
-                            best_score = score
-
-                    return best_move, best_score
-
-                def _alpha_beta(self, board, depth, alpha, beta, maximizing):
-                    self.nodes_searched += 1
-
-                    if board.is_game_over():
-                        result = board.result()
-                        if result == "1-0":
-                            return (1.0, None)
-                        elif result == "0-1":
-                            return (-1.0, None)
-                        return (0.0, None)
-
-                    if depth == 0:
-                        _, value = self.evaluate(board)
-                        if not board.turn:  # Black to move
-                            value = -value
-                        return (value, None)
-
-                    move_probs = self.get_move_probs(board)
-                    best_move = None
-
-                    if maximizing:
-                        max_score = -float('inf')
-                        for move, _ in move_probs[:15]:  # Limit branching for speed
-                            board.push(move)
-                            score, _ = self._alpha_beta(board, depth - 1, alpha, beta, False)
-                            board.pop()
-                            if score > max_score:
-                                max_score = score
-                                best_move = move
-                            alpha = max(alpha, score)
-                            if beta <= alpha:
-                                break
-                        return (max_score, best_move)
-                    else:
-                        min_score = float('inf')
-                        for move, _ in move_probs[:15]:  # Limit branching for speed
-                            board.push(move)
-                            score, _ = self._alpha_beta(board, depth - 1, alpha, beta, True)
-                            board.pop()
-                            if score < min_score:
-                                min_score = score
-                                best_move = move
-                            beta = min(beta, score)
-                            if beta <= alpha:
-                                break
-                        return (min_score, best_move)
-
-            # Create evaluation engine with depth 3 search
-            engine = EvalEngine(model, self.encoder, self.device, search_depth=3)
 
             wins = 0
             draws = 0
@@ -616,17 +515,28 @@ class Trainer:
                     is_engine_turn = (board.turn == chess.WHITE) == engine_plays_white
 
                     if is_engine_turn:
-                        # Our engine's turn - use search!
-                        best_move, _ = engine.search(board, depth=3)
-                        if best_move is None:
-                            legal_moves = list(board.legal_moves)
-                            best_move = legal_moves[0] if legal_moves else None
+                        # Our engine's turn - just use policy head (no search)
+                        with torch.no_grad():
+                            board_tensor = self.encoder.encode_board(board)
+                            board_tensor = torch.from_numpy(board_tensor).unsqueeze(0).to(self.device)
+                            policy_logits, _ = model(board_tensor)
+                            policy_probs = torch.softmax(policy_logits, dim=-1).cpu().numpy()[0]
+
+                        # Find best legal move by policy probability
+                        best_move = None
+                        best_prob = -1
+                        for move in board.legal_moves:
+                            move_idx = self.encoder.encode_move(move)
+                            if move_idx >= 0 and policy_probs[move_idx] > best_prob:
+                                best_prob = policy_probs[move_idx]
+                                best_move = move
+
                         if best_move:
                             board.push(best_move)
                         else:
                             break
                     else:
-                        # Stockfish's turn
+                        # Stockfish's turn - plays normally at skill level 5
                         sf.set_fen_position(board.fen())
                         sf_move = sf.get_best_move()
                         if sf_move:
