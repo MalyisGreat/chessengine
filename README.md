@@ -57,7 +57,7 @@ Conv 3x3, 256 filters
     ↓
 10x Residual Blocks (256 filters each)
     ↓
-├── Policy Head → 1858 moves
+├── Policy Head → 1968 moves
 └── Value Head → [-1, 1] (Stockfish evaluation)
 ```
 

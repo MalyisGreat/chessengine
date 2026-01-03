@@ -34,11 +34,13 @@ import requests
 import numpy as np
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 import multiprocessing as mp
 from io import BytesIO
 import re
 from datetime import datetime
+import threading
+import time
 
 # Lc0 V6 format constants
 V6_STRUCT_SIZE = 8356
@@ -124,6 +126,114 @@ def _init_lc0_move_tables():
     print(f"Initialized Lc0 move tables: {idx} moves")
 
 _init_lc0_move_tables()
+
+
+def _format_bytes(num_bytes: float) -> str:
+    if num_bytes < 1024:
+        return f"{num_bytes:.0f}B"
+    if num_bytes < 1024 ** 2:
+        return f"{num_bytes / 1024:.1f}KB"
+    if num_bytes < 1024 ** 3:
+        return f"{num_bytes / (1024 ** 2):.1f}MB"
+    return f"{num_bytes / (1024 ** 3):.2f}GB"
+
+
+def _format_duration(seconds: float) -> str:
+    if seconds <= 0:
+        return "--:--"
+    minutes, sec = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours > 0:
+        return f"{hours:d}:{minutes:02d}:{sec:02d}"
+    return f"{minutes:02d}:{sec:02d}"
+
+
+class DownloadProgress:
+    def __init__(self, total_files: int):
+        self.total_files = total_files
+        self.files_done = 0
+        self.files_failed = 0
+        self.files_cached = 0
+        self.bytes_downloaded = 0
+        self.bytes_total = 0
+        self.active: Dict[str, Dict[str, int]] = {}
+        self.start_time = time.time()
+        self.lock = threading.Lock()
+
+    def mark_cached(self, filename: str, size: int) -> None:
+        with self.lock:
+            self.files_done += 1
+            self.files_cached += 1
+            if size > 0:
+                self.bytes_total += size
+                self.bytes_downloaded += size
+
+    def register(self, filename: str, total_size: int) -> None:
+        with self.lock:
+            self.active[filename] = {"downloaded": 0, "total": total_size}
+            if total_size > 0:
+                self.bytes_total += total_size
+
+    def update(self, filename: str, delta: int) -> None:
+        with self.lock:
+            entry = self.active.get(filename)
+            if entry is None:
+                return
+            entry["downloaded"] += delta
+            self.bytes_downloaded += delta
+
+    def complete(self, filename: str, success: bool) -> None:
+        with self.lock:
+            if filename in self.active:
+                self.active.pop(filename, None)
+            self.files_done += 1
+            if not success:
+                self.files_failed += 1
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            return {
+                "total_files": self.total_files,
+                "files_done": self.files_done,
+                "files_failed": self.files_failed,
+                "files_cached": self.files_cached,
+                "bytes_downloaded": self.bytes_downloaded,
+                "bytes_total": self.bytes_total,
+                "active": dict(self.active),
+                "start_time": self.start_time,
+            }
+
+
+def _download_progress_reporter(progress: DownloadProgress, stop_event: threading.Event,
+                                interval_s: float = 5.0) -> None:
+    while not stop_event.wait(interval_s):
+        snapshot = progress.snapshot()
+        if snapshot["files_done"] >= snapshot["total_files"] and not snapshot["active"]:
+            return
+
+        elapsed = time.time() - snapshot["start_time"]
+        rate = snapshot["bytes_downloaded"] / elapsed if elapsed > 0 else 0.0
+        if snapshot["bytes_total"] > 0:
+            pct = (snapshot["bytes_downloaded"] / snapshot["bytes_total"]) * 100
+            eta = (snapshot["bytes_total"] - snapshot["bytes_downloaded"]) / rate if rate > 0 else 0.0
+            size_status = f"{_format_bytes(snapshot['bytes_downloaded'])}/{_format_bytes(snapshot['bytes_total'])} ({pct:.1f}%)"
+        else:
+            eta = 0.0
+            size_status = f"{_format_bytes(snapshot['bytes_downloaded'])}"
+
+        active_items = []
+        for name, stats in sorted(snapshot["active"].items(), key=lambda x: x[1]["downloaded"], reverse=True)[:3]:
+            total = stats["total"]
+            if total > 0:
+                active_items.append(f"{name} {stats['downloaded'] * 100 / total:.0f}%")
+            else:
+                active_items.append(f"{name} {_format_bytes(stats['downloaded'])}")
+
+        active_status = f" | active: {', '.join(active_items)}" if active_items else ""
+        tqdm.write(
+            f"Download status: {snapshot['files_done']}/{snapshot['total_files']} files, "
+            f"{size_status}, {_format_bytes(rate)}/s, ETA {_format_duration(eta)}{active_status}"
+        )
 
 
 def parse_v6_record(data: bytes) -> Optional[dict]:
@@ -412,26 +522,35 @@ def list_t80_files(base_url: str = "https://storage.lczero.org/files/training_da
 
 def download_single_file(args):
     """Download a single file - for parallel downloading"""
-    url, tar_path, file_idx, total_files = args
+    url, tar_path, file_idx, total_files, progress = args
     filename = os.path.basename(tar_path)
 
     if os.path.exists(tar_path):
-        return tar_path, True, f"[{file_idx+1}/{total_files}] {filename} (cached)"
+        size = os.path.getsize(tar_path)
+        progress.mark_cached(filename, size)
+        return tar_path, True, f"[{file_idx+1}/{total_files}] {filename} (cached, {_format_bytes(size)})"
 
     try:
         response = requests.get(url, stream=True, timeout=60)
         response.raise_for_status()
 
         total_size = int(response.headers.get('content-length', 0))
+        progress.register(filename, total_size)
 
         with open(tar_path, 'wb') as f:
             downloaded = 0
             for chunk in response.iter_content(chunk_size=65536):
+                if not chunk:
+                    continue
                 f.write(chunk)
                 downloaded += len(chunk)
+                progress.update(filename, len(chunk))
 
-        return tar_path, True, f"[{file_idx+1}/{total_files}] {filename} ({total_size/1e6:.1f}MB)"
+        progress.complete(filename, True)
+        size_label = _format_bytes(total_size) if total_size > 0 else _format_bytes(downloaded)
+        return tar_path, True, f"[{file_idx+1}/{total_files}] {filename} ({size_label})"
     except Exception as e:
+        progress.complete(filename, False)
         return tar_path, False, f"[{file_idx+1}/{total_files}] {filename} FAILED: {e}"
 
 
@@ -494,23 +613,38 @@ def download_and_process_t80(
 
     # PHASE 1: Download all files in parallel (much faster!)
     print(f"\n--- PHASE 1: Parallel Download ({min(workers, len(files))} concurrent) ---")
+    progress = DownloadProgress(len(files))
+    stop_event = threading.Event()
+    reporter_thread = threading.Thread(
+        target=_download_progress_reporter,
+        args=(progress, stop_event),
+        daemon=True,
+    )
+    reporter_thread.start()
+
     download_args = [
-        (base_url + filename, os.path.join(output_dir, filename), idx, len(files))
+        (base_url + filename, os.path.join(output_dir, filename), idx, len(files), progress)
         for idx, filename in enumerate(files)
     ]
 
     downloaded_files = []
-    with ThreadPoolExecutor(max_workers=min(workers, len(files))) as executor:
-        for tar_path, success, msg in tqdm(
-            executor.map(download_single_file, download_args),
-            total=len(files),
-            desc="Downloading"
-        ):
-            print(f"  {msg}")
+    max_workers = min(workers, len(files))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(download_single_file, args) for args in download_args]
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Downloading"):
+            tar_path, success, msg = future.result()
+            tqdm.write(f"  {msg}")
             if success:
                 downloaded_files.append(tar_path)
 
-    print(f"\nDownloaded {len(downloaded_files)}/{len(files)} files")
+    stop_event.set()
+    reporter_thread.join(timeout=2)
+
+    snapshot = progress.snapshot()
+    print(
+        f"\nDownloaded {len(downloaded_files)}/{len(files)} files "
+        f"(cached: {snapshot['files_cached']}, failed: {snapshot['files_failed']})"
+    )
 
     # PHASE 2: Process downloaded files
     print(f"\n--- PHASE 2: Process Files ({workers} workers) ---")

@@ -1081,9 +1081,11 @@ Examples:
     elif args.dataset == "sample":
         # Generate random sample data for testing
         import chess
+        from data.encoder import BoardEncoder
         os.makedirs(args.output, exist_ok=True)
         print("Generating sample data...")
 
+        encoder = BoardEncoder()
         boards = []
         values = []
 
@@ -1095,20 +1097,13 @@ Examples:
                     break
                 board.push(np.random.choice(legal))
 
-            tensor = np.zeros((12, 8, 8), dtype=np.float32)
-            for sq in chess.SQUARES:
-                piece = board.piece_at(sq)
-                if piece:
-                    plane = piece.piece_type - 1 + (6 if piece.color == chess.BLACK else 0)
-                    tensor[plane, sq // 8, sq % 8] = 1.0
-
-            boards.append(tensor)
+            boards.append(encoder.encode_board(board))
             values.append(np.random.uniform(-1, 1))
 
         np.savez(
             os.path.join(args.output, "sample.npz"),
             boards=np.array(boards),
-            policies=np.zeros((len(boards), 1858)),
+            policies=np.zeros((len(boards), encoder.num_moves)),
             values=np.array(values),
         )
         print(f"Saved sample data to {args.output}")

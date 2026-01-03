@@ -312,7 +312,8 @@ class ChessDataset(Dataset):
         if self.augment and np.random.random() > 0.5:
             board = self.encoder.flip_board(board)
             if self.policy_idx is not None:
-                policy = int(self.encoder.flip_move_idx[policy])
+                if 0 <= policy < len(self.encoder.flip_move_idx):
+                    policy = int(self.encoder.flip_move_idx[policy])
             else:
                 policy = self.encoder.flip_policy(policy)
 
