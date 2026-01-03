@@ -367,6 +367,14 @@ def lc0_planes_to_board(planes: np.ndarray, castling: tuple,
     Remaining planes are history (we ignore for now).
     """
     board = np.zeros((18, 8, 8), dtype=np.float32)
+    planes_arr = np.asarray(planes)
+    if planes_arr.dtype.kind not in ("u", "i"):
+        try:
+            planes_arr = planes_arr.astype(np.uint64)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid planes dtype: {planes_arr.dtype}") from exc
+    else:
+        planes_arr = planes_arr.astype(np.uint64, copy=False)
 
     # When black to move, Lc0's "our" is black and "their" is white
     # We need to swap and flip vertically
@@ -374,7 +382,9 @@ def lc0_planes_to_board(planes: np.ndarray, castling: tuple,
 
     # Extract piece bitboards (first 12 planes)
     for lc0_plane_idx in range(12):
-        bitboard = planes[lc0_plane_idx]
+        bitboard = int(planes_arr[lc0_plane_idx])
+        if bitboard == 0:
+            continue
 
         # Determine which plane this maps to in our encoding
         if is_black_to_move:
@@ -456,12 +466,15 @@ def process_chunk_file(chunk_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndar
             continue
 
         # Convert to our format
-        board = lc0_planes_to_board(
-            record['planes'],
-            record['castling'],
-            record['side_to_move'],
-            record['rule50']
-        )
+        try:
+            board = lc0_planes_to_board(
+                record['planes'],
+                record['castling'],
+                record['side_to_move'],
+                record['rule50']
+            )
+        except (TypeError, ValueError):
+            continue
 
         # Use soft policy targets (the key advantage of T80!)
         policy = record['probabilities']
