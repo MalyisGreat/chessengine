@@ -225,8 +225,8 @@ class ChessDataset(Dataset):
         Returns:
             Tuple of (board_tensor, policy_tensor, value_tensor)
         """
-        board = self.boards[idx].copy()
-        policy = self.policies[idx].copy()
+        board = self.boards[idx]
+        policy = self.policies[idx]
         value = self.values[idx]
 
         # Data augmentation: random horizontal flip

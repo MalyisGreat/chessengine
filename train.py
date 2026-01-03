@@ -31,6 +31,7 @@ import os
 import sys
 import argparse
 import time
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
@@ -243,8 +244,10 @@ class Trainer:
             print()
 
         # Setup mixed precision
-        scaler = torch.amp.GradScaler('cuda') if self.config.hardware.precision != "fp32" else None
+        use_amp = self.device.type == "cuda" and self.config.hardware.precision != "fp32"
+        scaler = torch.amp.GradScaler(self.device.type) if use_amp else None
         dtype = self.config.hardware.dtype
+        autocast_ctx = torch.amp.autocast if use_amp else nullcontext
 
         for epoch in range(self.epoch, self.config.training.epochs):
             self.epoch = epoch
@@ -254,11 +257,11 @@ class Trainer:
                 train_loader.sampler.set_epoch(epoch)
 
             # Training epoch
-            train_metrics = self._train_epoch(train_loader, scaler, dtype)
+            train_metrics = self._train_epoch(train_loader, scaler, dtype, autocast_ctx)
 
             # Validation
             if val_loader is not None and self.is_main:
-                val_metrics = self._validate(val_loader, dtype)
+                val_metrics = self._validate(val_loader, dtype, autocast_ctx)
             else:
                 val_metrics = None
 
@@ -326,6 +329,7 @@ class Trainer:
         train_loader: DataLoader,
         scaler: Optional[torch.amp.GradScaler],
         dtype: torch.dtype,
+        autocast_ctx,
     ) -> dict:
         """Train for one epoch"""
         self.model.train()
@@ -349,10 +353,10 @@ class Trainer:
             policy_targets = policy_targets.to(self.device, non_blocking=True)
             value_targets = value_targets.to(self.device, non_blocking=True)
 
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)
 
             # Forward pass with mixed precision
-            with torch.amp.autocast('cuda', dtype=dtype):
+            with autocast_ctx(self.device.type, dtype=dtype):
                 policy_logits, value_pred = self.model(boards)
                 loss, p_loss, v_loss = self.loss_fn(
                     policy_logits, value_pred,
@@ -408,7 +412,7 @@ class Trainer:
         }
 
     @torch.no_grad()
-    def _validate(self, val_loader: DataLoader, dtype: torch.dtype) -> dict:
+    def _validate(self, val_loader: DataLoader, dtype: torch.dtype, autocast_ctx) -> dict:
         """Validate the model"""
         self.model.eval()
 
@@ -425,7 +429,7 @@ class Trainer:
             policy_targets = policy_targets.to(self.device, non_blocking=True)
             value_targets = value_targets.to(self.device, non_blocking=True)
 
-            with torch.amp.autocast('cuda', dtype=dtype):
+            with autocast_ctx(self.device.type, dtype=dtype):
                 policy_logits, value_pred = self.model(boards)
                 loss, p_loss, v_loss = self.loss_fn(
                     policy_logits, value_pred,
@@ -697,13 +701,16 @@ def main():
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+        if hasattr(torch, "set_float32_matmul_precision"):
+            torch.set_float32_matmul_precision("high")
 
     try:
         # Create dataset
         if is_main_process(rank):
             print(f"Loading data from {args.data}...")
 
-        dataset = ChessDataset(args.data)
+        dataset = ChessDataset(args.data, augment=config.data.random_flip)
 
         # Split into train/val
         val_size = int(len(dataset) * config.training.val_split)
@@ -718,22 +725,30 @@ def main():
         else:
             train_sampler = None
 
+        num_workers = config.hardware.num_workers
+        loader_kwargs = {}
+        if num_workers > 0:
+            loader_kwargs["prefetch_factor"] = config.hardware.prefetch_factor
+            loader_kwargs["persistent_workers"] = True
+
         train_loader = DataLoader(
             train_dataset,
             batch_size=config.training.batch_size // world_size,
             shuffle=(train_sampler is None),
             sampler=train_sampler,
-            num_workers=config.hardware.num_workers,
+            num_workers=num_workers,
             pin_memory=config.hardware.pin_memory,
             drop_last=True,
+            **loader_kwargs,
         )
 
         val_loader = DataLoader(
             val_dataset,
             batch_size=config.training.batch_size // world_size,
             shuffle=False,
-            num_workers=config.hardware.num_workers,
+            num_workers=num_workers,
             pin_memory=config.hardware.pin_memory,
+            **loader_kwargs,
         ) if val_size > 0 else None
 
         # Create trainer
