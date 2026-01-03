@@ -247,7 +247,12 @@ class Trainer:
         use_amp = self.device.type == "cuda" and self.config.hardware.precision != "fp32"
         scaler = torch.amp.GradScaler(self.device.type) if use_amp else None
         dtype = self.config.hardware.dtype
-        autocast_ctx = torch.amp.autocast if use_amp else nullcontext
+        if use_amp:
+            def autocast_ctx():
+                return torch.amp.autocast(self.device.type, dtype=dtype)
+        else:
+            def autocast_ctx():
+                return nullcontext()
 
         for epoch in range(self.epoch, self.config.training.epochs):
             self.epoch = epoch
@@ -257,11 +262,11 @@ class Trainer:
                 train_loader.sampler.set_epoch(epoch)
 
             # Training epoch
-            train_metrics = self._train_epoch(train_loader, scaler, dtype, autocast_ctx)
+            train_metrics = self._train_epoch(train_loader, scaler, autocast_ctx)
 
             # Validation
             if val_loader is not None and self.is_main:
-                val_metrics = self._validate(val_loader, dtype, autocast_ctx)
+                val_metrics = self._validate(val_loader, autocast_ctx)
             else:
                 val_metrics = None
 
@@ -328,7 +333,6 @@ class Trainer:
         self,
         train_loader: DataLoader,
         scaler: Optional[torch.amp.GradScaler],
-        dtype: torch.dtype,
         autocast_ctx,
     ) -> dict:
         """Train for one epoch"""
@@ -356,7 +360,7 @@ class Trainer:
             self.optimizer.zero_grad(set_to_none=True)
 
             # Forward pass with mixed precision
-            with autocast_ctx(self.device.type, dtype=dtype):
+            with autocast_ctx():
                 policy_logits, value_pred = self.model(boards)
                 loss, p_loss, v_loss = self.loss_fn(
                     policy_logits, value_pred,
@@ -412,7 +416,7 @@ class Trainer:
         }
 
     @torch.no_grad()
-    def _validate(self, val_loader: DataLoader, dtype: torch.dtype, autocast_ctx) -> dict:
+    def _validate(self, val_loader: DataLoader, autocast_ctx) -> dict:
         """Validate the model"""
         self.model.eval()
 
@@ -429,7 +433,7 @@ class Trainer:
             policy_targets = policy_targets.to(self.device, non_blocking=True)
             value_targets = value_targets.to(self.device, non_blocking=True)
 
-            with autocast_ctx(self.device.type, dtype=dtype):
+            with autocast_ctx():
                 policy_logits, value_pred = self.model(boards)
                 loss, p_loss, v_loss = self.loss_fn(
                     policy_logits, value_pred,

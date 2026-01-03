@@ -240,7 +240,8 @@ Examples:
         run_command(
             f"{sys.executable} download_lichess_eval.py "
             f"--output {args.data_dir} "
-            f"--positions {args.positions}",
+            f"--positions {args.positions} "
+            f"--no-compress",  # Faster saves, larger files
             "Step 2/4: Downloading Lichess evaluated positions"
         )
 
