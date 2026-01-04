@@ -274,6 +274,7 @@ def eval_watcher(
     eval_max_moves: int,
     eval_every_epochs: int,
     eval_ft_compression: str,
+    min_ckpt_mtime: float,
     stop_event: threading.Event,
 ) -> None:
     seen = set()
@@ -286,6 +287,12 @@ def eval_watcher(
         for ckpt in ckpts:
             if ckpt in seen:
                 continue
+            try:
+                if ckpt.stat().st_mtime < min_ckpt_mtime:
+                    seen.add(ckpt)
+                    continue
+            except FileNotFoundError:
+                continue
             epoch = _parse_epoch(ckpt)
             seen.add(ckpt)
             if epoch is None or (epoch + 1) % eval_every_epochs != 0:
@@ -293,7 +300,7 @@ def eval_watcher(
 
             nnue_dir.mkdir(parents=True, exist_ok=True)
             nnue_path = nnue_dir / f"nn-epoch{epoch + 1}.nnue"
-            run(
+            rc = run(
                 [
                     sys.executable,
                     "serialize.py",
@@ -310,7 +317,11 @@ def eval_watcher(
                     eval_ft_compression,
                 ],
                 cwd=repo_path,
+                check=False,
             )
+            if rc != 0:
+                print(f"Serialize failed for {ckpt}. Continuing.")
+                continue
 
             cmd = [
                 sys.executable,
@@ -483,6 +494,7 @@ def main() -> None:
     stop_event = threading.Event()
     watcher_thread = None
     if not args.skip_eval:
+        min_ckpt_mtime = time.time() - 1.0
         watcher_thread = threading.Thread(
             target=eval_watcher,
             args=(
@@ -499,6 +511,7 @@ def main() -> None:
                 args.eval_max_moves,
                 args.eval_every_epochs,
                 args.eval_ft_compression,
+                min_ckpt_mtime,
                 stop_event,
             ),
             daemon=True,
