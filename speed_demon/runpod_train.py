@@ -230,6 +230,7 @@ def eval_watcher(
     eval_time_per_move: float,
     eval_max_moves: int,
     eval_every_epochs: int,
+    eval_ft_compression: str,
     stop_event: threading.Event,
 ) -> None:
     seen = set()
@@ -262,6 +263,8 @@ def eval_watcher(
                     str(l2),
                     "--l3",
                     str(l3),
+                    "--ft_compression",
+                    eval_ft_compression,
                 ],
                 cwd=repo_path,
             )
@@ -326,6 +329,13 @@ def main() -> None:
     parser.add_argument("--eval-time-per-move", type=float, default=0.05)
     parser.add_argument("--eval-max-moves", type=int, default=200)
     parser.add_argument("--eval-every-epochs", type=int, default=1)
+    parser.add_argument(
+        "--eval-ft-compression",
+        type=str,
+        default="none",
+        choices=["none", "leb128"],
+        help="Feature transformer compression for eval nets",
+    )
     parser.add_argument("--stockfish-path", type=str, default=None)
     parser.add_argument("--stockfish-base-nnue", type=str, default=None)
     parser.add_argument("--repo-path", type=str, default=str(ROOT / "third_party" / "nnue-pytorch"))
@@ -421,6 +431,7 @@ def main() -> None:
                 args.eval_time_per_move,
                 args.eval_max_moves,
                 args.eval_every_epochs,
+                args.eval_ft_compression,
                 stop_event,
             ),
             daemon=True,
