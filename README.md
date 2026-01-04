@@ -2,8 +2,9 @@
 
 ## Speed Demon NNUE (RunPod single command)
 
-This adds a new NNUE training pipeline (HalfKP, 256x32x32, int8) that trains on
-Linrock T80 binpack and runs Stockfish eval games after each epoch.
+This adds a new NNUE training pipeline (Speed Demon: HalfKP, 256x32x32, int8)
+that trains on Linrock T80 binpack and can run Stockfish eval games after each
+epoch.
 
 Single command on RunPod:
 
@@ -17,11 +18,18 @@ Defaults:
 - Outputs to `./outputs/speed_demon`
 - Eval results CSV: `./outputs/speed_demon/eval/eval.csv`
 
+Notes:
+- Stockfish 16.1 requires HalfKAv2_hm with 2560/15/32. The Speed Demon
+  256/32/32 net is not Stockfish-compatible, so eval will fail unless you
+  switch to `--stockfish-compat` or `--skip-eval`.
+
 Useful overrides:
 
 ```bash
 python speed_demon/runpod_train.py --positions 20000000 --positions-per-epoch 5000000 --eval-games 10
 python speed_demon/runpod_train.py --skip-download --skip-install
+python speed_demon/runpod_train.py --stockfish-compat
+python speed_demon/runpod_train.py --skip-eval
 ```
 
 Legacy CNN training pipeline is still available below.

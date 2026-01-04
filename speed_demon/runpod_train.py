@@ -18,6 +18,8 @@ DEFAULT_DATA_URL = (
     "https://huggingface.co/datasets/linrock/test80-2024/resolve/main/"
     "test80-2024-01-jan-2tb7p.min-v2.v6.binpack.zst"
 )
+STOCKFISH_NET_URL = "https://tests.stockfishchess.org/api/nn/{name}"
+STOCKFISH_COMPAT = {"features": "HalfKAv2_hm", "l1": 2560, "l2": 15, "l3": 32}
 
 
 def run(cmd, cwd=None, env=None, check=True):
@@ -182,6 +184,47 @@ def ensure_stockfish(explicit_path: Optional[str]) -> str:
     raise RuntimeError("Stockfish binary not found after extraction.")
 
 
+def _parse_stockfish_default_nets(stockfish_path: str) -> list[str]:
+    result = subprocess.run(
+        [stockfish_path],
+        input="uci\nquit\n",
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        return []
+
+    nets: list[str] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("option name EvalFile") or line.startswith(
+            "option name EvalFileSmall"
+        ):
+            parts = line.split("default", 1)
+            if len(parts) != 2:
+                continue
+            name = parts[1].strip()
+            if name and name != "<empty>":
+                nets.append(name)
+    return nets
+
+
+def ensure_stockfish_nets(stockfish_path: str) -> None:
+    root = Path(stockfish_path).resolve().parent
+    candidates = list(root.glob("nn-*.nnue")) + list(root.glob("*.nnue"))
+    if candidates:
+        return
+
+    nets = _parse_stockfish_default_nets(stockfish_path)
+    for name in nets:
+        target = root / name
+        if target.exists():
+            continue
+        url = STOCKFISH_NET_URL.format(name=name)
+        print(f"Downloading Stockfish net: {url}")
+        urlretrieve(url, target)
+
+
 def find_baseline_nnue(stockfish_path: str) -> Optional[str]:
     root = Path(stockfish_path).resolve().parent
     candidates = list(root.glob("nn-*.nnue")) + list(root.glob("*.nnue"))
@@ -338,8 +381,21 @@ def main() -> None:
     )
     parser.add_argument("--stockfish-path", type=str, default=None)
     parser.add_argument("--stockfish-base-nnue", type=str, default=None)
+    parser.add_argument(
+        "--stockfish-compat",
+        action="store_true",
+        help="Use Stockfish 16.1 compatible NNUE settings (HalfKAv2_hm, 2560/15/32).",
+    )
     parser.add_argument("--repo-path", type=str, default=str(ROOT / "third_party" / "nnue-pytorch"))
     args = parser.parse_args()
+
+    if args.stockfish_compat:
+        args.features = STOCKFISH_COMPAT["features"]
+        args.l1 = STOCKFISH_COMPAT["l1"]
+        args.l2 = STOCKFISH_COMPAT["l2"]
+        args.l3 = STOCKFISH_COMPAT["l3"]
+        if args.eval_ft_compression == "none":
+            args.eval_ft_compression = "leb128"
 
     positions_per_epoch = min(args.positions, args.positions_per_epoch)
     epochs = args.epochs
@@ -354,6 +410,16 @@ def main() -> None:
     print(f"  Features:          {args.features}")
     print(f"  Layers:            {args.l1}/{args.l2}/{args.l3}")
     print(f"  Lambda:            {args.lambda_}")
+    if not args.skip_eval and not (
+        args.features == STOCKFISH_COMPAT["features"]
+        and args.l1 == STOCKFISH_COMPAT["l1"]
+        and args.l2 == STOCKFISH_COMPAT["l2"]
+        and args.l3 == STOCKFISH_COMPAT["l3"]
+    ):
+        print(
+            "Warning: Stockfish 16.1 expects HalfKAv2_hm with 2560/15/32. "
+            "Eval may fail unless you use --stockfish-compat or --skip-eval."
+        )
 
     ensure_system_packages(args.skip_system)
 
@@ -367,6 +433,7 @@ def main() -> None:
     ensure_data_loader(repo_path, args.skip_compile)
 
     stockfish_path = ensure_stockfish(args.stockfish_path)
+    ensure_stockfish_nets(stockfish_path)
     base_nnue = args.stockfish_base_nnue or find_baseline_nnue(stockfish_path)
     print(f"Stockfish: {stockfish_path}")
     if base_nnue:
