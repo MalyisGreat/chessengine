@@ -3,22 +3,22 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Speed Demon Board</title>
+    <title>Speed Demon Arena</title>
     <style>
-      @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&display=swap");
-
       :root {
-        --bg-0: #121112;
-        --bg-1: #1b1a1d;
-        --bg-2: #2d2a31;
+        color-scheme: light;
+        --bg-0: #121015;
+        --bg-1: #1c1a22;
+        --bg-2: #231f2a;
+        --panel: rgba(22, 20, 26, 0.92);
+        --panel-border: rgba(255, 255, 255, 0.08);
         --accent: #f0b35a;
-        --light-square: #f1e3cc;
-        --dark-square: #6a4b2e;
-        --piece-light: #ffffff;
-        --piece-dark: #111013;
-        --panel: #1c1a1f;
-        --panel-border: #302c36;
-        --shadow: rgba(0, 0, 0, 0.35);
+        --accent-soft: rgba(240, 179, 90, 0.18);
+        --ink: #f8f2e9;
+        --ink-muted: rgba(248, 242, 233, 0.7);
+        --light-square: #f3e8d1;
+        --dark-square: #7a4f2c;
+        --shadow: rgba(0, 0, 0, 0.4);
       }
 
       * {
@@ -27,49 +27,106 @@
 
       body {
         margin: 0;
-        font-family: "Space Grotesk", "Segoe UI", sans-serif;
-        color: #f6f3ee;
-        background:
-          radial-gradient(circle at top right, rgba(240, 179, 90, 0.18), transparent 40%),
-          radial-gradient(circle at 20% 20%, rgba(90, 146, 240, 0.12), transparent 50%),
-          linear-gradient(140deg, var(--bg-0), var(--bg-1) 45%, var(--bg-2));
         min-height: 100vh;
         display: flex;
         align-items: center;
         justify-content: center;
+        font-family: "Gill Sans MT", "Gill Sans", "Trebuchet MS", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 10% 15%, rgba(240, 179, 90, 0.16), transparent 45%),
+          radial-gradient(circle at 90% 10%, rgba(110, 155, 240, 0.18), transparent 55%),
+          linear-gradient(135deg, var(--bg-0), var(--bg-1) 40%, var(--bg-2));
         padding: 32px;
       }
 
-      .shell {
-        width: min(1200px, 96vw);
+      .app {
+        width: min(1240px, 96vw);
         display: grid;
         gap: 24px;
       }
 
-      header {
+      .topbar {
         display: flex;
-        align-items: baseline;
+        align-items: center;
         justify-content: space-between;
-        gap: 12px;
+        gap: 16px;
       }
 
-      h1 {
+      .title {
+        display: grid;
+        gap: 6px;
+      }
+
+      .title h1 {
         margin: 0;
-        font-size: clamp(28px, 4vw, 44px);
-        font-weight: 700;
-        letter-spacing: -0.02em;
+        font-size: clamp(28px, 4vw, 42px);
+        font-family: "Palatino Linotype", "Book Antiqua", Palatino, serif;
+        letter-spacing: 0.02em;
       }
 
-      .subtitle {
-        color: rgba(246, 243, 238, 0.7);
+      .title span {
+        color: var(--ink-muted);
         font-size: 14px;
       }
 
-      main {
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 16px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        font-size: 13px;
+      }
+
+      .status-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #f0b35a;
+        box-shadow: 0 0 12px rgba(240, 179, 90, 0.7);
+      }
+
+      .status-pill.thinking .status-dot {
+        animation: pulse 1s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0% {
+          transform: scale(1);
+          opacity: 0.6;
+        }
+        50% {
+          transform: scale(1.6);
+          opacity: 1;
+        }
+        100% {
+          transform: scale(1);
+          opacity: 0.6;
+        }
+      }
+
+      .layout {
         display: grid;
-        grid-template-columns: minmax(280px, 520px) minmax(260px, 1fr);
+        grid-template-columns: minmax(320px, 560px) minmax(280px, 1fr);
         gap: 24px;
-        align-items: start;
+      }
+
+      .board-card {
+        background: var(--panel);
+        border: 1px solid var(--panel-border);
+        border-radius: 20px;
+        padding: 18px;
+        box-shadow: 0 24px 40px var(--shadow);
+      }
+
+      .board-wrap {
+        position: relative;
+        border-radius: 16px;
+        overflow: hidden;
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
       }
 
       .board {
@@ -77,171 +134,350 @@
         aspect-ratio: 1;
         display: grid;
         grid-template-columns: repeat(8, 1fr);
-        border-radius: 18px;
-        overflow: hidden;
-        box-shadow: 0 18px 40px var(--shadow);
-        border: 1px solid rgba(255, 255, 255, 0.08);
         background: #000;
-        animation: fadeUp 0.6s ease;
       }
 
       .square {
+        position: relative;
         display: flex;
         align-items: center;
         justify-content: center;
-        font-size: clamp(18px, 2.4vw, 30px);
-        font-weight: 700;
-        text-transform: uppercase;
-        transition: transform 0.15s ease, box-shadow 0.2s ease;
+        transition: transform 0.12s ease, box-shadow 0.2s ease;
         user-select: none;
       }
 
       .square.light {
         background: var(--light-square);
-        color: var(--piece-dark);
       }
 
       .square.dark {
         background: var(--dark-square);
-        color: var(--piece-light);
       }
 
       .square.selected {
         box-shadow: inset 0 0 0 3px rgba(240, 179, 90, 0.9);
-        transform: scale(0.98);
       }
 
       .square.hint {
-        box-shadow: inset 0 0 0 3px rgba(240, 179, 90, 0.45);
+        box-shadow: inset 0 0 0 3px rgba(240, 179, 90, 0.4);
       }
 
       .square.last {
-        box-shadow: inset 0 0 0 3px rgba(90, 200, 250, 0.6);
+        box-shadow: inset 0 0 0 3px rgba(90, 200, 250, 0.7);
       }
 
-      .panel {
-        background: var(--panel);
-        border: 1px solid var(--panel-border);
-        border-radius: 16px;
-        padding: 20px;
-        box-shadow: 0 16px 30px var(--shadow);
-        animation: fadeUp 0.8s ease;
+      .coord {
+        position: absolute;
+        font-size: 11px;
+        color: rgba(0, 0, 0, 0.6);
+        pointer-events: none;
       }
 
-      .panel h2 {
-        margin: 0 0 12px;
-        font-size: 20px;
+      .coord.file {
+        bottom: 6px;
+        right: 8px;
       }
 
-      .status {
-        background: rgba(255, 255, 255, 0.06);
-        padding: 12px;
+      .coord.rank {
+        top: 6px;
+        left: 8px;
+      }
+
+      .piece {
+        width: 88%;
+        height: 88%;
+        pointer-events: none;
+        filter: drop-shadow(0 6px 6px rgba(0, 0, 0, 0.35));
+      }
+
+      .piece.white .piece-shape {
+        fill: #fdf7ee;
+        stroke: #3b2d20;
+        stroke-width: 1.5;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .piece.black .piece-shape {
+        fill: #2b2521;
+        stroke: #f7e9d0;
+        stroke-width: 1.3;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .board-footer {
+        display: flex;
+        gap: 12px;
+        padding-top: 16px;
+      }
+
+      .board-footer button {
+        flex: 1;
+        padding: 10px 14px;
         border-radius: 12px;
-        font-size: 14px;
-        line-height: 1.5;
-        margin-bottom: 16px;
-      }
-
-      .controls {
-        display: grid;
-        gap: 10px;
-        margin-bottom: 16px;
-      }
-
-      .controls button,
-      .controls select,
-      .controls input {
-        width: 100%;
-        padding: 10px 12px;
-        border-radius: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.15);
-        background: #2a2730;
-        color: #f6f3ee;
-        font-family: inherit;
-        font-size: 14px;
-      }
-
-      .controls button {
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--ink);
+        font-weight: 600;
         cursor: pointer;
         transition: transform 0.15s ease, box-shadow 0.2s ease;
       }
 
-      .controls button:hover {
+      .board-footer button:hover {
         transform: translateY(-1px);
-        box-shadow: 0 6px 12px rgba(0, 0, 0, 0.25);
+        box-shadow: 0 10px 18px rgba(0, 0, 0, 0.25);
       }
 
-      .label {
+      .panel {
+        display: grid;
+        gap: 16px;
+      }
+
+      .panel-card {
+        background: var(--panel);
+        border: 1px solid var(--panel-border);
+        border-radius: 18px;
+        padding: 18px;
+        box-shadow: 0 18px 32px var(--shadow);
+      }
+
+      .panel-card h2 {
+        margin: 0 0 12px;
+        font-size: 18px;
+        letter-spacing: 0.03em;
+      }
+
+      .engine-meta {
+        font-size: 13px;
+        color: var(--ink-muted);
+        display: grid;
+        gap: 8px;
+      }
+
+      .controls {
+        display: grid;
+        gap: 12px;
+      }
+
+      .controls label {
         font-size: 12px;
-        color: rgba(246, 243, 238, 0.6);
-        margin-bottom: 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--ink-muted);
+        margin-bottom: 4px;
       }
 
-      .log {
+      .controls select,
+      .controls input {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(18, 16, 21, 0.8);
+        color: var(--ink);
+        font-size: 14px;
+      }
+
+      .move-list {
+        max-height: 240px;
+        overflow-y: auto;
+        display: grid;
+        gap: 6px;
+        font-size: 13px;
+        color: var(--ink-muted);
+      }
+
+      .move-row {
+        display: grid;
+        grid-template-columns: 28px 1fr 1fr;
+        gap: 8px;
+      }
+
+      .move-row span {
+        padding: 4px 6px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .move-row .num {
+        text-align: right;
+        color: rgba(255, 255, 255, 0.4);
+      }
+
+      .footer-note {
         font-size: 12px;
-        color: rgba(246, 243, 238, 0.7);
-        margin-top: 16px;
-        line-height: 1.5;
-        white-space: pre-line;
+        color: rgba(255, 255, 255, 0.5);
       }
 
-      @keyframes fadeUp {
-        from {
-          opacity: 0;
-          transform: translateY(8px);
-        }
-        to {
-          opacity: 1;
-          transform: translateY(0);
-        }
+      .piece-sprite {
+        position: absolute;
+        width: 0;
+        height: 0;
+        overflow: hidden;
       }
 
-      @media (max-width: 900px) {
-        main {
+      @media (max-width: 980px) {
+        .layout {
           grid-template-columns: 1fr;
         }
       }
     </style>
   </head>
   <body>
-    <div class="shell">
-      <header>
-        <h1>Speed Demon Board</h1>
-        <div class="subtitle">Play against your NNUE in the browser</div>
+    <div class="app">
+      <header class="topbar">
+        <div class="title">
+          <h1>Speed Demon Arena</h1>
+          <span>Stockfish + NNUE live board</span>
+        </div>
+        <div id="statusPill" class="status-pill">
+          <span class="status-dot"></span>
+          <span id="statusText">Connecting...</span>
+        </div>
       </header>
 
-      <main>
-        <div id="board" class="board" aria-label="Chess board"></div>
-        <section class="panel">
-          <h2>Match Control</h2>
-          <div id="status" class="status">Checking engine...</div>
-
-          <div class="controls">
-            <div>
-              <div class="label">Play as</div>
-              <select id="sideSelect">
-                <option value="white">White</option>
-                <option value="black">Black</option>
-              </select>
-            </div>
-            <div>
-              <div class="label">Time per move (seconds)</div>
-              <input id="timeInput" type="number" min="0.01" step="0.01" value="0.05" />
-            </div>
+      <main class="layout">
+        <section class="board-card">
+          <div class="board-wrap">
+            <div id="board" class="board" aria-label="Chess board"></div>
+          </div>
+          <div class="board-footer">
             <button id="newGame">New Game</button>
             <button id="flipBoard">Flip Board</button>
-            <button id="undoMove">Undo Move</button>
+            <button id="undoMove">Undo</button>
           </div>
+        </section>
 
-          <div class="log" id="log">Moves: none</div>
+        <section class="panel">
+          <div class="panel-card">
+            <h2>Engine Status</h2>
+            <div id="engineMeta" class="engine-meta">Waiting for engine...</div>
+          </div>
+          <div class="panel-card">
+            <h2>Controls</h2>
+            <div class="controls">
+              <div>
+                <label for="sideSelect">Play as</label>
+                <select id="sideSelect">
+                  <option value="white">White</option>
+                  <option value="black">Black</option>
+                </select>
+              </div>
+              <div>
+                <label for="timeInput">Time per move (seconds)</label>
+                <input id="timeInput" type="number" min="0.01" step="0.01" value="0.05" />
+              </div>
+            </div>
+          </div>
+          <div class="panel-card">
+            <h2>Move List</h2>
+            <div id="moveList" class="move-list">No moves yet.</div>
+            <div class="footer-note">Tip: Press R to reset, U to undo twice.</div>
+          </div>
         </section>
       </main>
     </div>
 
+    <svg class="piece-sprite" xmlns="http://www.w3.org/2000/svg">
+      <symbol id="wP" viewBox="0 0 45 45">
+        <g class="piece-shape">
+          <circle cx="22.5" cy="14" r="6" />
+          <rect x="17" y="19" width="11" height="12" rx="4" />
+          <path d="M12 37h21l-2.5-8H14.5L12 37z" />
+        </g>
+      </symbol>
+      <symbol id="wR" viewBox="0 0 45 45">
+        <g class="piece-shape">
+          <rect x="11" y="10" width="23" height="6" />
+          <rect x="13" y="16" width="19" height="15" rx="2" />
+          <path d="M10 37h25l-2.5-8H12.5L10 37z" />
+        </g>
+      </symbol>
+      <symbol id="wN" viewBox="0 0 45 45">
+        <g class="piece-shape">
+          <path d="M13 34l6-14 9-6 6 4-4 14H13z" />
+          <circle cx="28" cy="16" r="2" />
+          <path d="M10 37h25l-2.5-6H12.5L10 37z" />
+        </g>
+      </symbol>
+      <symbol id="wB" viewBox="0 0 45 45">
+        <g class="piece-shape">
+          <path d="M22.5 10c3 4 5 7 5 10 0 4-4 6-5 7-1-1-5-3-5-7 0-3 2-6 5-10z" />
+          <circle cx="22.5" cy="9" r="3" />
+          <path d="M12 37h21l-2.5-8H14.5L12 37z" />
+        </g>
+      </symbol>
+      <symbol id="wQ" viewBox="0 0 45 45">
+        <g class="piece-shape">
+          <circle cx="12" cy="14" r="3" />
+          <circle cx="22.5" cy="10" r="3.5" />
+          <circle cx="33" cy="14" r="3" />
+          <path d="M12 16l4 14h13l4-14H12z" />
+          <path d="M10 37h25l-2.5-7H12.5L10 37z" />
+        </g>
+      </symbol>
+      <symbol id="wK" viewBox="0 0 45 45">
+        <g class="piece-shape">
+          <path d="M22.5 6v8" />
+          <path d="M19 10h7" />
+          <path d="M16 18h13l-2 10H18l-2-10z" />
+          <path d="M10 37h25l-2.5-8H12.5L10 37z" />
+        </g>
+      </symbol>
+      <symbol id="bP" viewBox="0 0 45 45">
+        <g class="piece-shape">
+          <circle cx="22.5" cy="14" r="6" />
+          <rect x="17" y="19" width="11" height="12" rx="4" />
+          <path d="M12 37h21l-2.5-8H14.5L12 37z" />
+        </g>
+      </symbol>
+      <symbol id="bR" viewBox="0 0 45 45">
+        <g class="piece-shape">
+          <rect x="11" y="10" width="23" height="6" />
+          <rect x="13" y="16" width="19" height="15" rx="2" />
+          <path d="M10 37h25l-2.5-8H12.5L10 37z" />
+        </g>
+      </symbol>
+      <symbol id="bN" viewBox="0 0 45 45">
+        <g class="piece-shape">
+          <path d="M13 34l6-14 9-6 6 4-4 14H13z" />
+          <circle cx="28" cy="16" r="2" />
+          <path d="M10 37h25l-2.5-6H12.5L10 37z" />
+        </g>
+      </symbol>
+      <symbol id="bB" viewBox="0 0 45 45">
+        <g class="piece-shape">
+          <path d="M22.5 10c3 4 5 7 5 10 0 4-4 6-5 7-1-1-5-3-5-7 0-3 2-6 5-10z" />
+          <circle cx="22.5" cy="9" r="3" />
+          <path d="M12 37h21l-2.5-8H14.5L12 37z" />
+        </g>
+      </symbol>
+      <symbol id="bQ" viewBox="0 0 45 45">
+        <g class="piece-shape">
+          <circle cx="12" cy="14" r="3" />
+          <circle cx="22.5" cy="10" r="3.5" />
+          <circle cx="33" cy="14" r="3" />
+          <path d="M12 16l4 14h13l4-14H12z" />
+          <path d="M10 37h25l-2.5-7H12.5L10 37z" />
+        </g>
+      </symbol>
+      <symbol id="bK" viewBox="0 0 45 45">
+        <g class="piece-shape">
+          <path d="M22.5 6v8" />
+          <path d="M19 10h7" />
+          <path d="M16 18h13l-2 10H18l-2-10z" />
+          <path d="M10 37h25l-2.5-8H12.5L10 37z" />
+        </g>
+      </symbol>
+    </svg>
+
     <script type="module">
       const boardEl = document.getElementById("board");
-      const statusEl = document.getElementById("status");
-      const logEl = document.getElementById("log");
+      const statusText = document.getElementById("statusText");
+      const statusPill = document.getElementById("statusPill");
+      const engineMeta = document.getElementById("engineMeta");
+      const moveList = document.getElementById("moveList");
       const sideSelect = document.getElementById("sideSelect");
       const timeInput = document.getElementById("timeInput");
       const newGameBtn = document.getElementById("newGame");
@@ -252,7 +488,7 @@
       try {
         ({ Chess } = await import("/chess.min.js"));
       } catch (err) {
-        statusEl.textContent = "chess.js failed to load. Check your network.";
+        statusText.textContent = "chess.js failed to load. Check your network.";
         throw err;
       }
 
@@ -280,15 +516,38 @@
             squareEl.className = `square ${isLight ? "light" : "dark"}`;
             squareEl.dataset.square = squareName;
             squareEl.addEventListener("click", () => onSquareClick(squareName));
+
+            const isBottomRank = rank === (flipped ? "8" : "1");
+            const isLeftFile = file === (flipped ? "h" : "a");
+            if (isBottomRank) {
+              const label = document.createElement("span");
+              label.className = "coord file";
+              label.textContent = file;
+              squareEl.appendChild(label);
+            }
+            if (isLeftFile) {
+              const label = document.createElement("span");
+              label.className = "coord rank";
+              label.textContent = rank;
+              squareEl.appendChild(label);
+            }
+
             squareMap[squareName] = squareEl;
             boardEl.appendChild(squareEl);
           }
         }
       }
 
+      function pieceSymbol(piece) {
+        const prefix = piece.color === "w" ? "w" : "b";
+        return `${prefix}${piece.type.toUpperCase()}`;
+      }
+
       function renderBoard() {
         for (const square of Object.values(squareMap)) {
-          square.textContent = "";
+          const coord = square.querySelectorAll(".coord");
+          square.innerHTML = "";
+          coord.forEach((node) => square.appendChild(node));
           square.classList.remove("selected", "hint", "last");
         }
 
@@ -302,8 +561,14 @@
             const square = `${file}${rank}`;
             const el = squareMap[square];
             if (!el) continue;
-            const letter = piece.type;
-            el.textContent = piece.color === "w" ? letter.toUpperCase() : letter;
+
+            const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+            svg.setAttribute("viewBox", "0 0 45 45");
+            svg.classList.add("piece", piece.color === "w" ? "white" : "black");
+            const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+            use.setAttribute("href", `#${pieceSymbol(piece)}`);
+            svg.appendChild(use);
+            el.appendChild(svg);
           }
         }
 
@@ -319,17 +584,36 @@
         }
       }
 
-      function updateStatus(text) {
-        statusEl.textContent = text;
-      }
-
-      function setLog(text) {
-        logEl.textContent = text;
+      function updateStatus(text, thinking = false) {
+        statusText.textContent = text;
+        statusPill.classList.toggle("thinking", thinking);
       }
 
       function resetSelection() {
         selectedSquare = null;
         legalTargets = [];
+      }
+
+      function updateMoveList() {
+        const history = game.history();
+        if (!history.length) {
+          moveList.textContent = "No moves yet.";
+          return;
+        }
+        const rows = [];
+        for (let i = 0; i < history.length; i += 2) {
+          rows.push({
+            num: i / 2 + 1,
+            white: history[i] || "",
+            black: history[i + 1] || "",
+          });
+        }
+        moveList.innerHTML = rows
+          .map(
+            (row) =>
+              `<div class="move-row"><span class="num">${row.num}.</span><span>${row.white}</span><span>${row.black}</span></div>`
+          )
+          .join("");
       }
 
       function onSquareClick(square) {
@@ -358,7 +642,7 @@
         lastMove = { from: move.from, to: move.to };
         resetSelection();
         renderBoard();
-        setLog(`Moves: ${game.pgn({ max_width: 5, newline_char: " " })}`);
+        updateMoveList();
         triggerEngineMove();
       }
 
@@ -374,7 +658,7 @@
         }
 
         engineThinking = true;
-        updateStatus("Engine thinking...");
+        updateStatus("Engine thinking...", true);
         const timeLimit = parseFloat(timeInput.value || "0.05");
         try {
           const response = await fetch("/move", {
@@ -395,13 +679,14 @@
               lastMove = { from: move.from, to: move.to };
             }
             renderBoard();
-            setLog(`Moves: ${game.pgn({ max_width: 5, newline_char: " " })}`);
+            updateMoveList();
             updateStatus("Your move.");
           }
         } catch (err) {
-          updateStatus("Engine not reachable. Is the server running?");
+          updateStatus("Engine not reachable.");
         } finally {
           engineThinking = false;
+          statusPill.classList.remove("thinking");
         }
       }
 
@@ -410,7 +695,14 @@
           const response = await fetch("/health");
           const data = await response.json();
           if (data.ok) {
-            updateStatus(`Engine ready. ${data.nnue}`);
+            updateStatus("Engine ready.");
+            const stockfish = data.stockfish.split(/[\\/]/).pop();
+            const nnue = data.nnue.split(/[\\/]/).pop();
+            engineMeta.innerHTML = `
+              <div><strong>Stockfish</strong>: ${stockfish}</div>
+              <div><strong>NNUE</strong>: ${nnue}</div>
+              <div><strong>Threads</strong>: ${data.threads} | <strong>Hash</strong>: ${data.hash_mb} MB</div>
+            `;
           } else {
             updateStatus("Engine not ready.");
           }
@@ -424,7 +716,7 @@
         resetSelection();
         lastMove = null;
         renderBoard();
-        setLog("Moves: none");
+        updateMoveList();
         triggerEngineMove();
       });
 
@@ -440,14 +732,11 @@
         lastMove = null;
         resetSelection();
         renderBoard();
+        updateMoveList();
       });
 
       sideSelect.addEventListener("change", () => {
-        if (sideSelect.value === "black") {
-          flipped = true;
-        } else {
-          flipped = false;
-        }
+        flipped = sideSelect.value === "black";
         buildBoard();
         renderBoard();
         triggerEngineMove();
