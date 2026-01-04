@@ -114,6 +114,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in ("/", "/index.html"):
             self._send_file(Path(__file__).with_name("index.html"))
             return
+        if self.path == "/chess.min.js":
+            self._send_file(Path(__file__).with_name("chess.min.js"))
+            return
         if self.path == "/health":
             self._send_json({"ok": True, **ENGINE_INFO})
             return
