@@ -1,4 +1,5 @@
 import argparse
+import csv
 import os
 import platform
 import re
@@ -355,7 +356,118 @@ def eval_watcher(
         if (output_dir / "training_finished").exists():
             return
 
-        time.sleep(15)
+    time.sleep(15)
+
+
+def _latest_checkpoint(output_dir: Path) -> Optional[Path]:
+    ckpts = list(output_dir.rglob("epoch=*.ckpt"))
+    if not ckpts:
+        return None
+    ckpts.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return ckpts[0]
+
+
+def _read_logged_epochs(csv_path: Path) -> set[int]:
+    if not csv_path.exists():
+        return set()
+    epochs = set()
+    try:
+        with csv_path.open("r", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if "epoch" in row and row["epoch"]:
+                    epochs.add(int(row["epoch"]))
+    except Exception:
+        return set()
+    return epochs
+
+
+def _run_final_eval(
+    repo_path: Path,
+    output_dir: Path,
+    features: str,
+    l1: int,
+    l2: int,
+    l3: int,
+    stockfish_path: str,
+    base_nnue: Optional[str],
+    base_classical: bool,
+    eval_games: int,
+    eval_time_per_move: float,
+    eval_max_moves: int,
+    eval_ft_compression: str,
+) -> None:
+    ckpt = _latest_checkpoint(output_dir)
+    if not ckpt:
+        print("No checkpoints found for final eval.")
+        return
+
+    epoch = _parse_epoch(ckpt)
+    if epoch is None:
+        print(f"Could not parse epoch from {ckpt}. Skipping final eval.")
+        return
+
+    eval_csv = output_dir / "eval" / "eval.csv"
+    logged_epochs = _read_logged_epochs(eval_csv)
+    epoch_label = epoch + 1
+    if epoch_label in logged_epochs:
+        return
+
+    nnue_dir = output_dir / "nnue"
+    nnue_dir.mkdir(parents=True, exist_ok=True)
+    nnue_path = nnue_dir / f"nn-epoch{epoch_label}.nnue"
+    if not nnue_path.exists():
+        rc = run(
+            [
+                sys.executable,
+                "serialize.py",
+                str(ckpt),
+                str(nnue_path),
+                f"--features={features}",
+                "--l1",
+                str(l1),
+                "--l2",
+                str(l2),
+                "--l3",
+                str(l3),
+                "--ft_compression",
+                eval_ft_compression,
+            ],
+            cwd=repo_path,
+            check=False,
+        )
+        if rc != 0:
+            print(f"Serialize failed for {ckpt}. Skipping final eval.")
+            return
+
+    eval_script = ROOT / "speed_demon" / "eval_vs_stockfish.py"
+    cmd = [
+        sys.executable,
+        str(eval_script),
+        "--nnue",
+        str(nnue_path),
+        "--stockfish",
+        stockfish_path,
+        "--games",
+        str(eval_games),
+        "--time-per-move",
+        str(eval_time_per_move),
+        "--max-moves",
+        str(eval_max_moves),
+        "--csv",
+        str(eval_csv),
+        "--epoch",
+        str(epoch_label),
+        "--debug-dir",
+        str(output_dir / "eval" / "debug"),
+    ]
+    if base_nnue:
+        cmd += ["--stockfish-base-nnue", base_nnue]
+    if base_classical:
+        cmd += ["--stockfish-classical-base"]
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        print(f"Final eval failed (code {result.returncode}).")
 
 
 def main() -> None:
@@ -535,6 +647,23 @@ def main() -> None:
     stop_event.set()
     if watcher_thread:
         watcher_thread.join()
+
+    if not args.skip_eval:
+        _run_final_eval(
+            repo_path=repo_path,
+            output_dir=output_dir,
+            features=args.features,
+            l1=args.l1,
+            l2=args.l2,
+            l3=args.l3,
+            stockfish_path=stockfish_path,
+            base_nnue=base_nnue,
+            base_classical=args.stockfish_classical_base,
+            eval_games=args.eval_games,
+            eval_time_per_move=args.eval_time_per_move,
+            eval_max_moves=args.eval_max_moves,
+            eval_ft_compression=args.eval_ft_compression,
+        )
 
     print("Training complete.")
 
