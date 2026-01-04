@@ -139,6 +139,13 @@ def main() -> None:
 
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Serving on http://{args.host}:{args.port}")
+    print(f"Local URL:    http://127.0.0.1:{args.port}")
+    print(f"Localhost:    http://localhost:{args.port}")
+    if args.host == "0.0.0.0":
+        print("Bind address: 0.0.0.0 (use a real host/IP in your browser)")
+    pod_id = os.environ.get("RUNPOD_POD_ID")
+    if pod_id:
+        print(f"RunPod proxy: https://{pod_id}-{args.port}.proxy.runpod.net")
     httpd.serve_forever()
 
 
