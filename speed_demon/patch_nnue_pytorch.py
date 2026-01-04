@@ -29,10 +29,31 @@ def _patch_model_config_usage(text: str) -> str:
     )
 
 
+def _patch_native_aliases(text: str) -> str:
+    lines = text.splitlines()
+    out_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("type SparseBatchPtr ="):
+            indent = line[: len(line) - len(line.lstrip())]
+            out_lines.append(f"{indent}SparseBatchPtr = ctypes.POINTER(SparseBatch)")
+            continue
+        if stripped.startswith("type FenBatchPtr ="):
+            indent = line[: len(line) - len(line.lstrip())]
+            out_lines.append(f"{indent}FenBatchPtr = ctypes.POINTER(FenBatch)")
+            continue
+        out_lines.append(line)
+    return "\n".join(out_lines)
+
+
 def patch_file(path: Path) -> bool:
     original = path.read_text(encoding="utf-8")
-    updated = _insert_after_l1_arg(original)
-    updated = _patch_model_config_usage(updated)
+    updated = original
+    if path.name in ("train.py", "serialize.py"):
+        updated = _insert_after_l1_arg(updated)
+        updated = _patch_model_config_usage(updated)
+    if path.name == "_native.py":
+        updated = _patch_native_aliases(updated)
     if updated == original:
         return False
     path.write_text(updated, encoding="utf-8")
@@ -52,9 +73,10 @@ def main() -> None:
     repo = Path(args.repo)
     train_path = repo / "train.py"
     serialize_path = repo / "serialize.py"
+    native_path = repo / "data_loader" / "_native.py"
 
     patched_any = False
-    for target in (train_path, serialize_path):
+    for target in (train_path, serialize_path, native_path):
         if not target.exists():
             raise FileNotFoundError(f"Missing {target}")
         if patch_file(target):
