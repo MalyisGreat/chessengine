@@ -81,9 +81,12 @@ def evaluate(
 ) -> Optional[dict]:
     nnue_path = os.path.abspath(nnue_path)
     stockfish_path = os.path.abspath(stockfish_path)
+    stockfish_cwd = os.path.dirname(stockfish_path)
+    if base_nnue:
+        base_nnue = os.path.abspath(base_nnue)
 
-    engine_base = chess.engine.SimpleEngine.popen_uci(stockfish_path)
-    engine_test = chess.engine.SimpleEngine.popen_uci(stockfish_path)
+    engine_base = chess.engine.SimpleEngine.popen_uci(stockfish_path, cwd=stockfish_cwd)
+    engine_test = chess.engine.SimpleEngine.popen_uci(stockfish_path, cwd=stockfish_cwd)
 
     try:
         _configure_base_engine(engine_base, base_nnue, threads, hash_mb, force_classical)
