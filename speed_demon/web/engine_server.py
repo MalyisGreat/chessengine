@@ -2,6 +2,7 @@ import argparse
 import atexit
 import json
 import os
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock
@@ -14,6 +15,35 @@ import chess.engine
 ENGINE: Optional[chess.engine.SimpleEngine] = None
 ENGINE_LOCK = Lock()
 ENGINE_INFO = {}
+
+
+def _find_stockfish() -> Optional[str]:
+    env_path = os.environ.get("STOCKFISH_PATH")
+    if env_path and os.path.exists(env_path):
+        return env_path
+    candidates = [
+        "/root/.stockfish/stockfish/stockfish/stockfish-ubuntu-x86-64-avx2",
+        "/usr/games/stockfish",
+        "/usr/bin/stockfish",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def _find_latest_nnue(repo_root: Path) -> Optional[Path]:
+    nnue_dir = repo_root / "outputs" / "speed_demon" / "nnue"
+    candidates: list[Path] = []
+    if nnue_dir.exists():
+        candidates = list(nnue_dir.glob("*.nnue"))
+    if not candidates:
+        fallback = repo_root / "speed_demon.nnue"
+        if fallback.exists():
+            return fallback
+        return None
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0]
 
 
 def _load_engine(stockfish_path: str, nnue_path: str, threads: int, hash_mb: int) -> None:
@@ -126,14 +156,32 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Serve a local NNUE engine over HTTP.")
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8008)
-    parser.add_argument("--stockfish", type=str, required=True)
-    parser.add_argument("--nnue", type=str, required=True)
+    parser.add_argument("--stockfish", type=str, default=None)
+    parser.add_argument("--nnue", type=str, default=None)
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--hash-mb", type=int, default=128)
     args = parser.parse_args()
 
-    stockfish_path = os.path.abspath(args.stockfish)
-    nnue_path = os.path.abspath(args.nnue)
+    repo_root = Path(__file__).resolve().parents[2]
+    stockfish_path = os.path.abspath(args.stockfish) if args.stockfish else _find_stockfish()
+    if not stockfish_path:
+        print("Stockfish not found. Pass --stockfish /path/to/stockfish.")
+        sys.exit(2)
+
+    nnue_path = None
+    if args.nnue:
+        nnue_path = os.path.abspath(args.nnue)
+    else:
+        latest_nnue = _find_latest_nnue(repo_root)
+        if latest_nnue is not None:
+            nnue_path = latest_nnue.as_posix()
+    if not nnue_path or not os.path.exists(nnue_path):
+        print("NNUE not found. Pass --nnue /path/to/nnue.")
+        sys.exit(2)
+
+    print(f"Using Stockfish: {stockfish_path}")
+    print(f"Using NNUE:      {nnue_path}")
+
     _load_engine(stockfish_path, nnue_path, args.threads, args.hash_mb)
     atexit.register(_shutdown_engine)
 

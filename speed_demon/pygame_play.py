@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+from pathlib import Path
 
 import chess
 import chess.engine
@@ -27,6 +28,35 @@ def _configure_engine(engine: chess.engine.SimpleEngine, nnue_path: str, threads
         options["Use NNUE"] = True
     if options:
         engine.configure(options)
+
+
+def _find_stockfish() -> str | None:
+    env_path = os.environ.get("STOCKFISH_PATH")
+    if env_path and os.path.exists(env_path):
+        return env_path
+    candidates = [
+        "/root/.stockfish/stockfish/stockfish/stockfish-ubuntu-x86-64-avx2",
+        "/usr/games/stockfish",
+        "/usr/bin/stockfish",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def _find_latest_nnue(repo_root: Path) -> Path | None:
+    nnue_dir = repo_root / "outputs" / "speed_demon" / "nnue"
+    candidates: list[Path] = []
+    if nnue_dir.exists():
+        candidates = list(nnue_dir.glob("*.nnue"))
+    if not candidates:
+        fallback = repo_root / "speed_demon.nnue"
+        if fallback.exists():
+            return fallback
+        return None
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0]
 
 
 def _board_coords(flip: bool):
@@ -93,8 +123,8 @@ def _render_board(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Play against NNUE in pygame.")
-    parser.add_argument("--stockfish", required=True, help="Path to Stockfish binary")
-    parser.add_argument("--nnue", required=True, help="Path to .nnue file")
+    parser.add_argument("--stockfish", default=None, help="Path to Stockfish binary")
+    parser.add_argument("--nnue", default=None, help="Path to .nnue file")
     parser.add_argument("--side", choices=["white", "black"], default="white")
     parser.add_argument("--time", type=float, default=0.05, help="Seconds per move")
     parser.add_argument("--threads", type=int, default=2)
@@ -102,8 +132,25 @@ def main() -> None:
     parser.add_argument("--square-size", type=int, default=80)
     args = parser.parse_args()
 
-    stockfish_path = os.path.abspath(args.stockfish)
-    nnue_path = os.path.abspath(args.nnue)
+    repo_root = Path(__file__).resolve().parents[1]
+    stockfish_path = os.path.abspath(args.stockfish) if args.stockfish else _find_stockfish()
+    if not stockfish_path:
+        print("Stockfish not found. Pass --stockfish /path/to/stockfish.")
+        sys.exit(2)
+
+    nnue_path = None
+    if args.nnue:
+        nnue_path = os.path.abspath(args.nnue)
+    else:
+        latest_nnue = _find_latest_nnue(repo_root)
+        if latest_nnue is not None:
+            nnue_path = str(latest_nnue)
+    if not nnue_path or not os.path.exists(nnue_path):
+        print("NNUE not found. Pass --nnue /path/to/nnue.")
+        sys.exit(2)
+
+    print(f"Using Stockfish: {stockfish_path}")
+    print(f"Using NNUE:      {nnue_path}")
 
     engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
     _configure_engine(engine, nnue_path, args.threads, args.hash_mb)
