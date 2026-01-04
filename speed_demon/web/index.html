@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Speed Demon Board</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&display=swap");
+
+      :root {
+        --bg-0: #121112;
+        --bg-1: #1b1a1d;
+        --bg-2: #2d2a31;
+        --accent: #f0b35a;
+        --light-square: #f1e3cc;
+        --dark-square: #6a4b2e;
+        --piece-light: #ffffff;
+        --piece-dark: #111013;
+        --panel: #1c1a1f;
+        --panel-border: #302c36;
+        --shadow: rgba(0, 0, 0, 0.35);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Space Grotesk", "Segoe UI", sans-serif;
+        color: #f6f3ee;
+        background:
+          radial-gradient(circle at top right, rgba(240, 179, 90, 0.18), transparent 40%),
+          radial-gradient(circle at 20% 20%, rgba(90, 146, 240, 0.12), transparent 50%),
+          linear-gradient(140deg, var(--bg-0), var(--bg-1) 45%, var(--bg-2));
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 32px;
+      }
+
+      .shell {
+        width: min(1200px, 96vw);
+        display: grid;
+        gap: 24px;
+      }
+
+      header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(28px, 4vw, 44px);
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+
+      .subtitle {
+        color: rgba(246, 243, 238, 0.7);
+        font-size: 14px;
+      }
+
+      main {
+        display: grid;
+        grid-template-columns: minmax(280px, 520px) minmax(260px, 1fr);
+        gap: 24px;
+        align-items: start;
+      }
+
+      .board {
+        width: 100%;
+        aspect-ratio: 1;
+        display: grid;
+        grid-template-columns: repeat(8, 1fr);
+        border-radius: 18px;
+        overflow: hidden;
+        box-shadow: 0 18px 40px var(--shadow);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: #000;
+        animation: fadeUp 0.6s ease;
+      }
+
+      .square {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: clamp(18px, 2.4vw, 30px);
+        font-weight: 700;
+        text-transform: uppercase;
+        transition: transform 0.15s ease, box-shadow 0.2s ease;
+        user-select: none;
+      }
+
+      .square.light {
+        background: var(--light-square);
+        color: var(--piece-dark);
+      }
+
+      .square.dark {
+        background: var(--dark-square);
+        color: var(--piece-light);
+      }
+
+      .square.selected {
+        box-shadow: inset 0 0 0 3px rgba(240, 179, 90, 0.9);
+        transform: scale(0.98);
+      }
+
+      .square.hint {
+        box-shadow: inset 0 0 0 3px rgba(240, 179, 90, 0.45);
+      }
+
+      .square.last {
+        box-shadow: inset 0 0 0 3px rgba(90, 200, 250, 0.6);
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--panel-border);
+        border-radius: 16px;
+        padding: 20px;
+        box-shadow: 0 16px 30px var(--shadow);
+        animation: fadeUp 0.8s ease;
+      }
+
+      .panel h2 {
+        margin: 0 0 12px;
+        font-size: 20px;
+      }
+
+      .status {
+        background: rgba(255, 255, 255, 0.06);
+        padding: 12px;
+        border-radius: 12px;
+        font-size: 14px;
+        line-height: 1.5;
+        margin-bottom: 16px;
+      }
+
+      .controls {
+        display: grid;
+        gap: 10px;
+        margin-bottom: 16px;
+      }
+
+      .controls button,
+      .controls select,
+      .controls input {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        background: #2a2730;
+        color: #f6f3ee;
+        font-family: inherit;
+        font-size: 14px;
+      }
+
+      .controls button {
+        cursor: pointer;
+        transition: transform 0.15s ease, box-shadow 0.2s ease;
+      }
+
+      .controls button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 12px rgba(0, 0, 0, 0.25);
+      }
+
+      .label {
+        font-size: 12px;
+        color: rgba(246, 243, 238, 0.6);
+        margin-bottom: 6px;
+      }
+
+      .log {
+        font-size: 12px;
+        color: rgba(246, 243, 238, 0.7);
+        margin-top: 16px;
+        line-height: 1.5;
+        white-space: pre-line;
+      }
+
+      @keyframes fadeUp {
+        from {
+          opacity: 0;
+          transform: translateY(8px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      @media (max-width: 900px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header>
+        <h1>Speed Demon Board</h1>
+        <div class="subtitle">Play against your NNUE in the browser</div>
+      </header>
+
+      <main>
+        <div id="board" class="board" aria-label="Chess board"></div>
+        <section class="panel">
+          <h2>Match Control</h2>
+          <div id="status" class="status">Checking engine...</div>
+
+          <div class="controls">
+            <div>
+              <div class="label">Play as</div>
+              <select id="sideSelect">
+                <option value="white">White</option>
+                <option value="black">Black</option>
+              </select>
+            </div>
+            <div>
+              <div class="label">Time per move (seconds)</div>
+              <input id="timeInput" type="number" min="0.01" step="0.01" value="0.05" />
+            </div>
+            <button id="newGame">New Game</button>
+            <button id="flipBoard">Flip Board</button>
+            <button id="undoMove">Undo Move</button>
+          </div>
+
+          <div class="log" id="log">Moves: none</div>
+        </section>
+      </main>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chess.js@1.0.0/chess.min.js"></script>
+    <script>
+      const boardEl = document.getElementById("board");
+      const statusEl = document.getElementById("status");
+      const logEl = document.getElementById("log");
+      const sideSelect = document.getElementById("sideSelect");
+      const timeInput = document.getElementById("timeInput");
+      const newGameBtn = document.getElementById("newGame");
+      const flipBtn = document.getElementById("flipBoard");
+      const undoBtn = document.getElementById("undoMove");
+
+      if (typeof Chess === "undefined") {
+        statusEl.textContent = "chess.js failed to load. Check your network.";
+        throw new Error("chess.js missing");
+      }
+
+      const game = new Chess();
+      let squareMap = {};
+      let selectedSquare = null;
+      let legalTargets = [];
+      let engineThinking = false;
+      let flipped = false;
+      let lastMove = null;
+
+      function buildBoard() {
+        boardEl.innerHTML = "";
+        squareMap = {};
+        const files = ["a", "b", "c", "d", "e", "f", "g", "h"];
+        const ranks = ["8", "7", "6", "5", "4", "3", "2", "1"];
+        const viewRanks = flipped ? ranks.slice().reverse() : ranks;
+        const viewFiles = flipped ? files.slice().reverse() : files;
+
+        for (const rank of viewRanks) {
+          for (const file of viewFiles) {
+            const squareName = `${file}${rank}`;
+            const squareEl = document.createElement("div");
+            const isLight = (file.charCodeAt(0) + parseInt(rank, 10)) % 2 === 0;
+            squareEl.className = `square ${isLight ? "light" : "dark"}`;
+            squareEl.dataset.square = squareName;
+            squareEl.addEventListener("click", () => onSquareClick(squareName));
+            squareMap[squareName] = squareEl;
+            boardEl.appendChild(squareEl);
+          }
+        }
+      }
+
+      function renderBoard() {
+        for (const square of Object.values(squareMap)) {
+          square.textContent = "";
+          square.classList.remove("selected", "hint", "last");
+        }
+
+        const boardState = game.board();
+        for (let rankIndex = 0; rankIndex < 8; rankIndex++) {
+          for (let fileIndex = 0; fileIndex < 8; fileIndex++) {
+            const piece = boardState[rankIndex][fileIndex];
+            if (!piece) continue;
+            const file = String.fromCharCode("a".charCodeAt(0) + fileIndex);
+            const rank = String(8 - rankIndex);
+            const square = `${file}${rank}`;
+            const el = squareMap[square];
+            if (!el) continue;
+            const letter = piece.type;
+            el.textContent = piece.color === "w" ? letter.toUpperCase() : letter;
+          }
+        }
+
+        if (selectedSquare && squareMap[selectedSquare]) {
+          squareMap[selectedSquare].classList.add("selected");
+        }
+        for (const target of legalTargets) {
+          if (squareMap[target]) squareMap[target].classList.add("hint");
+        }
+        if (lastMove) {
+          if (squareMap[lastMove.from]) squareMap[lastMove.from].classList.add("last");
+          if (squareMap[lastMove.to]) squareMap[lastMove.to].classList.add("last");
+        }
+      }
+
+      function updateStatus(text) {
+        statusEl.textContent = text;
+      }
+
+      function setLog(text) {
+        logEl.textContent = text;
+      }
+
+      function resetSelection() {
+        selectedSquare = null;
+        legalTargets = [];
+      }
+
+      function onSquareClick(square) {
+        if (engineThinking) return;
+        const piece = game.get(square);
+        if (!selectedSquare) {
+          if (piece && piece.color === game.turn()) {
+            selectedSquare = square;
+            legalTargets = game.moves({ square, verbose: true }).map((m) => m.to);
+          }
+          renderBoard();
+          return;
+        }
+
+        const move = game.move({
+          from: selectedSquare,
+          to: square,
+          promotion: "q",
+        });
+        if (!move) {
+          resetSelection();
+          renderBoard();
+          return;
+        }
+
+        lastMove = { from: move.from, to: move.to };
+        resetSelection();
+        renderBoard();
+        setLog(`Moves: ${game.pgn({ max_width: 5, newline_char: " " })}`);
+        triggerEngineMove();
+      }
+
+      async function triggerEngineMove() {
+        if (game.game_over()) {
+          updateStatus("Game over.");
+          return;
+        }
+        const playerColor = sideSelect.value === "white" ? "w" : "b";
+        if (game.turn() === playerColor) {
+          updateStatus("Your move.");
+          return;
+        }
+
+        engineThinking = true;
+        updateStatus("Engine thinking...");
+        const timeLimit = parseFloat(timeInput.value || "0.05");
+        try {
+          const response = await fetch("/move", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fen: game.fen(), time: timeLimit }),
+          });
+          const data = await response.json();
+          if (data.error) {
+            updateStatus(`Engine error: ${data.error}`);
+          } else {
+            const uci = data.move;
+            const from = uci.slice(0, 2);
+            const to = uci.slice(2, 4);
+            const promotion = uci.length > 4 ? uci.slice(4) : "q";
+            const move = game.move({ from, to, promotion });
+            if (move) {
+              lastMove = { from: move.from, to: move.to };
+            }
+            renderBoard();
+            setLog(`Moves: ${game.pgn({ max_width: 5, newline_char: " " })}`);
+            updateStatus("Your move.");
+          }
+        } catch (err) {
+          updateStatus("Engine not reachable. Is the server running?");
+        } finally {
+          engineThinking = false;
+        }
+      }
+
+      async function checkHealth() {
+        try {
+          const response = await fetch("/health");
+          const data = await response.json();
+          if (data.ok) {
+            updateStatus(`Engine ready. ${data.nnue}`);
+          } else {
+            updateStatus("Engine not ready.");
+          }
+        } catch (err) {
+          updateStatus("Engine server not running.");
+        }
+      }
+
+      newGameBtn.addEventListener("click", () => {
+        game.reset();
+        resetSelection();
+        lastMove = null;
+        renderBoard();
+        setLog("Moves: none");
+        triggerEngineMove();
+      });
+
+      flipBtn.addEventListener("click", () => {
+        flipped = !flipped;
+        buildBoard();
+        renderBoard();
+      });
+
+      undoBtn.addEventListener("click", () => {
+        game.undo();
+        game.undo();
+        lastMove = null;
+        resetSelection();
+        renderBoard();
+      });
+
+      sideSelect.addEventListener("change", () => {
+        if (sideSelect.value === "black") {
+          flipped = true;
+        } else {
+          flipped = false;
+        }
+        buildBoard();
+        renderBoard();
+        triggerEngineMove();
+      });
+
+      buildBoard();
+      renderBoard();
+      checkHealth().then(triggerEngineMove);
+    </script>
+  </body>
+</html>

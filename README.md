@@ -49,6 +49,13 @@ Estimate Elo quickly (ladder vs limited Stockfish):
 python speed_demon/estimate_elo.py --nnue ./outputs/speed_demon/nnue/nn-epoch4.nnue --stockfish /path/to/stockfish --levels 1200,1600,2000,2400 --games 8
 ```
 
+Play in browser (local engine server):
+
+```bash
+python speed_demon/web/engine_server.py --stockfish /path/to/stockfish --nnue /path/to/nnue
+# Open http://127.0.0.1:8008 in your browser
+```
+
 Legacy CNN training pipeline is still available below.
 
 A superhuman chess engine trained using supervised learning on 316M Stockfish-evaluated positions. Achieves ~3000 ELO in under 1 hour on 5x H100 GPUs.
