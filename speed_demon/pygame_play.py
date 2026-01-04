@@ -68,6 +68,14 @@ def _board_coords(flip: bool):
     return files, ranks
 
 
+def _parse_square(square: str) -> int:
+    if hasattr(chess, "parse_square"):
+        return chess.parse_square(square)
+    file_idx = ord(square[0]) - ord("a")
+    rank_idx = int(square[1]) - 1
+    return chess.square(file_idx, rank_idx)
+
+
 def _square_from_mouse(x: int, y: int, square_size: int, flip: bool) -> str | None:
     if x < 0 or y < 0:
         return None
@@ -113,7 +121,7 @@ def _render_board(
             if square in legal_targets:
                 pygame.draw.rect(screen, HIGHLIGHT, rect, 2)
 
-            piece = game.piece_at(chess.parse_square(square))
+            piece = game.piece_at(_parse_square(square))
             if piece:
                 label = piece.symbol()
                 text = font.render(label, True, TEXT_COLOR)
@@ -161,8 +169,8 @@ def main() -> None:
     status_height = 80
     screen = pygame.display.set_mode((board_px, board_px + status_height))
     pygame.display.set_caption("Speed Demon NNUE")
-    font = pygame.font.SysFont("Consolas", int(square_size * 0.6))
-    status_font = pygame.font.SysFont("Consolas", 18)
+    font = pygame.font.Font(None, int(square_size * 0.6))
+    status_font = pygame.font.Font(None, 22)
 
     game = chess.Board()
     player_is_white = args.side == "white"
@@ -244,11 +252,11 @@ def main() -> None:
                 square = _square_from_mouse(mx, my, square_size, flip)
                 if not square:
                     continue
-                piece = game.piece_at(chess.parse_square(square))
+                piece = game.piece_at(_parse_square(square))
                 if selected:
                     move = chess.Move(
-                        from_square=chess.parse_square(selected),
-                        to_square=chess.parse_square(square),
+                        from_square=_parse_square(selected),
+                        to_square=_parse_square(square),
                         promotion=chess.QUEEN,
                     )
                     if move in game.legal_moves:
@@ -267,7 +275,7 @@ def main() -> None:
                         legal_targets = [
                             chess.square_name(m.to_square)
                             for m in game.legal_moves
-                            if m.from_square == chess.parse_square(square)
+                            if m.from_square == _parse_square(square)
                         ]
         draw()
 
