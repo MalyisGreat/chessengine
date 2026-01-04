@@ -34,6 +34,7 @@ python speed_demon/runpod_train.py --skip-eval
 python speed_demon/runpod_train.py --stockfish-classical-base
 python speed_demon/runpod_train.py --stockfish-base-elo 1600 --eval-games 12
 python speed_demon/runpod_train.py --data-max-gb 2 --positions 2000000 --positions-per-epoch 500000
+python speed_demon/runpod_train.py --no-eval-ladder --stockfish-base-elo 1400
 ```
 
 Local training tip (smaller dataset so it fits on a desktop):

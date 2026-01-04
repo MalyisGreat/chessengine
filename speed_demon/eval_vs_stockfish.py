@@ -276,6 +276,18 @@ def main() -> None:
     parser.add_argument("--epoch", type=int, default=None, help="Epoch number")
     args = parser.parse_args()
 
+    print(f"Stockfish binary: {args.stockfish}")
+    if args.stockfish_base_nnue:
+        print(f"Base NNUE: {args.stockfish_base_nnue}")
+    elif args.stockfish_classical_base:
+        print("Base NNUE: disabled (classical eval).")
+    else:
+        print("Base NNUE: Stockfish defaults.")
+    if args.stockfish_base_elo is not None:
+        print(f"Base Elo: {args.stockfish_base_elo}")
+    if args.stockfish_base_skill is not None:
+        print(f"Base Skill: {args.stockfish_base_skill}")
+
     metrics = evaluate(
         nnue_path=args.nnue,
         stockfish_path=args.stockfish,

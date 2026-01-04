@@ -337,6 +337,12 @@ def eval_watcher(
     eval_every_epochs: int,
     eval_ft_compression: str,
     serialize_verbose: bool,
+    eval_ladder: bool,
+    ladder_start_elo: int,
+    ladder_step: int,
+    ladder_games: int,
+    ladder_win_rate: float,
+    ladder_max_elo: int,
     min_ckpt_mtime: float,
     stop_event: threading.Event,
 ) -> None:
@@ -377,37 +383,47 @@ def eval_watcher(
             ):
                 continue
 
-            cmd = [
-                sys.executable,
-                str(eval_script),
-                "--nnue",
-                str(nnue_path),
-                "--stockfish",
-                stockfish_path,
-                "--games",
-                str(eval_games),
-                "--time-per-move",
-                str(eval_time_per_move),
-                "--max-moves",
-                str(eval_max_moves),
-                "--csv",
-                str(eval_csv),
-                "--epoch",
-                str(epoch + 1),
-                "--debug-dir",
-                str(output_dir / "eval" / "debug"),
-            ]
-            if base_nnue:
-                cmd += ["--stockfish-base-nnue", base_nnue]
-            if base_classical:
-                cmd += ["--stockfish-classical-base"]
-            if base_elo is not None:
-                cmd += ["--stockfish-base-elo", str(base_elo)]
-            if base_skill is not None:
-                cmd += ["--stockfish-base-skill", str(base_skill)]
-            result = subprocess.run(cmd)
-            if result.returncode != 0:
-                print(f"Eval command failed (code {result.returncode}). Continuing.")
+            if eval_ladder:
+                current_elo = max(1400, ladder_start_elo)
+                while current_elo <= ladder_max_elo:
+                    print(f"Ladder eval vs base Elo {current_elo}...")
+                    metrics = _run_eval_once(
+                        eval_script=eval_script,
+                        nnue_path=nnue_path,
+                        stockfish_path=stockfish_path,
+                        eval_csv=eval_csv,
+                        epoch_label=epoch + 1,
+                        eval_games=ladder_games,
+                        eval_time_per_move=eval_time_per_move,
+                        eval_max_moves=eval_max_moves,
+                        base_nnue=base_nnue,
+                        base_classical=base_classical,
+                        base_elo=current_elo,
+                        base_skill=base_skill,
+                        debug_dir=output_dir / "eval" / "debug",
+                    )
+                    if metrics is None:
+                        break
+                    win_rate = _parse_win_rate(metrics)
+                    if win_rate is None or win_rate < ladder_win_rate:
+                        break
+                    current_elo += ladder_step
+            else:
+                _run_eval_once(
+                    eval_script=eval_script,
+                    nnue_path=nnue_path,
+                    stockfish_path=stockfish_path,
+                    eval_csv=eval_csv,
+                    epoch_label=epoch + 1,
+                    eval_games=eval_games,
+                    eval_time_per_move=eval_time_per_move,
+                    eval_max_moves=eval_max_moves,
+                    base_nnue=base_nnue,
+                    base_classical=base_classical,
+                    base_elo=base_elo,
+                    base_skill=base_skill,
+                    debug_dir=output_dir / "eval" / "debug",
+                )
 
         if (output_dir / "training_finished").exists():
             return
@@ -438,6 +454,83 @@ def _read_logged_epochs(csv_path: Path) -> set[int]:
     return epochs
 
 
+def _read_last_metrics(csv_path: Path) -> Optional[dict]:
+    if not csv_path.exists():
+        return None
+    last_row = None
+    try:
+        with csv_path.open("r", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                last_row = row
+    except Exception:
+        return None
+    return last_row
+
+
+def _parse_win_rate(metrics: dict) -> Optional[float]:
+    try:
+        if "win_rate" in metrics and metrics["win_rate"] not in (None, ""):
+            return float(metrics["win_rate"])
+        wins = int(metrics.get("wins", 0))
+        games = int(metrics.get("games", 0))
+        if games > 0:
+            return wins / games
+    except Exception:
+        return None
+    return None
+
+
+def _run_eval_once(
+    eval_script: Path,
+    nnue_path: Path,
+    stockfish_path: str,
+    eval_csv: Path,
+    epoch_label: int,
+    eval_games: int,
+    eval_time_per_move: float,
+    eval_max_moves: int,
+    base_nnue: Optional[str],
+    base_classical: bool,
+    base_elo: Optional[int],
+    base_skill: Optional[int],
+    debug_dir: Path,
+) -> Optional[dict]:
+    cmd = [
+        sys.executable,
+        str(eval_script),
+        "--nnue",
+        str(nnue_path),
+        "--stockfish",
+        stockfish_path,
+        "--games",
+        str(eval_games),
+        "--time-per-move",
+        str(eval_time_per_move),
+        "--max-moves",
+        str(eval_max_moves),
+        "--csv",
+        str(eval_csv),
+        "--epoch",
+        str(epoch_label),
+        "--debug-dir",
+        str(debug_dir),
+    ]
+    if base_nnue:
+        cmd += ["--stockfish-base-nnue", base_nnue]
+    if base_classical:
+        cmd += ["--stockfish-classical-base"]
+    if base_elo is not None:
+        cmd += ["--stockfish-base-elo", str(base_elo)]
+    if base_skill is not None:
+        cmd += ["--stockfish-base-skill", str(base_skill)]
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        print(f"Eval command failed (code {result.returncode}).")
+        return None
+    return _read_last_metrics(eval_csv)
+
+
 def _run_final_eval(
     repo_path: Path,
     output_dir: Path,
@@ -455,6 +548,12 @@ def _run_final_eval(
     eval_max_moves: int,
     eval_ft_compression: str,
     serialize_verbose: bool,
+    eval_ladder: bool,
+    ladder_start_elo: int,
+    ladder_step: int,
+    ladder_games: int,
+    ladder_win_rate: float,
+    ladder_max_elo: int,
 ) -> None:
     ckpt = _latest_checkpoint(output_dir)
     if not ckpt:
@@ -491,37 +590,60 @@ def _run_final_eval(
             return
 
     eval_script = ROOT / "speed_demon" / "eval_vs_stockfish.py"
-    cmd = [
-        sys.executable,
-        str(eval_script),
-        "--nnue",
-        str(nnue_path),
-        "--stockfish",
-        stockfish_path,
-        "--games",
-        str(eval_games),
-        "--time-per-move",
-        str(eval_time_per_move),
-        "--max-moves",
-        str(eval_max_moves),
-        "--csv",
-        str(eval_csv),
-        "--epoch",
-        str(epoch_label),
-        "--debug-dir",
-        str(output_dir / "eval" / "debug"),
-    ]
-    if base_nnue:
-        cmd += ["--stockfish-base-nnue", base_nnue]
-    if base_classical:
-        cmd += ["--stockfish-classical-base"]
-    if base_elo is not None:
-        cmd += ["--stockfish-base-elo", str(base_elo)]
-    if base_skill is not None:
-        cmd += ["--stockfish-base-skill", str(base_skill)]
-    result = subprocess.run(cmd)
-    if result.returncode != 0:
-        print(f"Final eval failed (code {result.returncode}).")
+    if eval_ladder:
+        current_elo = max(1400, ladder_start_elo)
+        while current_elo <= ladder_max_elo:
+            print(f"Ladder eval vs base Elo {current_elo}...")
+            metrics = _run_eval_once(
+                eval_script=eval_script,
+                nnue_path=nnue_path,
+                stockfish_path=stockfish_path,
+                eval_csv=eval_csv,
+                epoch_label=epoch_label,
+                eval_games=ladder_games,
+                eval_time_per_move=eval_time_per_move,
+                eval_max_moves=eval_max_moves,
+                base_nnue=base_nnue,
+                base_classical=base_classical,
+                base_elo=current_elo,
+                base_skill=base_skill,
+                debug_dir=output_dir / "eval" / "debug",
+            )
+            if metrics is None:
+                break
+            win_rate = _parse_win_rate(metrics)
+            if win_rate is None or win_rate < ladder_win_rate:
+                break
+            current_elo += ladder_step
+    else:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(eval_script),
+                "--nnue",
+                str(nnue_path),
+                "--stockfish",
+                stockfish_path,
+                "--games",
+                str(eval_games),
+                "--time-per-move",
+                str(eval_time_per_move),
+                "--max-moves",
+                str(eval_max_moves),
+                "--csv",
+                str(eval_csv),
+                "--epoch",
+                str(epoch_label),
+                "--debug-dir",
+                str(output_dir / "eval" / "debug"),
+            ]
+            + (["--stockfish-base-nnue", base_nnue] if base_nnue else [])
+            + (["--stockfish-classical-base"] if base_classical else [])
+            + (["--stockfish-base-elo", str(base_elo)] if base_elo is not None else [])
+            + (["--stockfish-base-skill", str(base_skill)] if base_skill is not None else []),
+        )
+        if result.returncode != 0:
+            print(f"Final eval failed (code {result.returncode}).")
 
 
 def main() -> None:
@@ -560,6 +682,23 @@ def main() -> None:
     parser.add_argument("--eval-time-per-move", type=float, default=0.05)
     parser.add_argument("--eval-max-moves", type=int, default=200)
     parser.add_argument("--eval-every-epochs", type=int, default=1)
+    parser.add_argument(
+        "--eval-ladder",
+        action="store_true",
+        default=True,
+        help="Run a Stockfish Elo ladder per epoch (default on).",
+    )
+    parser.add_argument(
+        "--no-eval-ladder",
+        action="store_false",
+        dest="eval_ladder",
+        help="Disable the ladder and run a single eval per epoch.",
+    )
+    parser.add_argument("--eval-ladder-start-elo", type=int, default=1400)
+    parser.add_argument("--eval-ladder-step", type=int, default=200)
+    parser.add_argument("--eval-ladder-games", type=int, default=10)
+    parser.add_argument("--eval-ladder-win-rate", type=float, default=0.9)
+    parser.add_argument("--eval-ladder-max-elo", type=int, default=3190)
     parser.add_argument(
         "--eval-ft-compression",
         type=str,
@@ -620,6 +759,19 @@ def main() -> None:
     print(f"  Features:          {args.features}")
     print(f"  Layers:            {args.l1}/{args.l2}/{args.l3}")
     print(f"  Lambda:            {args.lambda_}")
+    if not args.skip_eval:
+        if args.eval_ladder:
+            print(
+                "  Eval ladder:      start {} step {} games {} win_rate {} max {}".format(
+                    args.eval_ladder_start_elo,
+                    args.eval_ladder_step,
+                    args.eval_ladder_games,
+                    args.eval_ladder_win_rate,
+                    args.eval_ladder_max_elo,
+                )
+            )
+        else:
+            print(f"  Eval games:        {args.eval_games}")
     if not args.skip_eval and not (
         args.features == STOCKFISH_COMPAT["features"]
         and args.l1 == STOCKFISH_COMPAT["l1"]
@@ -630,6 +782,12 @@ def main() -> None:
             "Warning: Stockfish 16.1 expects HalfKAv2_hm with 2560/15/32. "
             "Eval may fail unless you use --stockfish-compat or --skip-eval."
         )
+
+    if args.eval_ladder and args.eval_ladder_start_elo < 1400:
+        print("Eval ladder start Elo < 1400; forcing to 1400.")
+        args.eval_ladder_start_elo = 1400
+    if args.eval_ladder and args.eval_ladder_max_elo < args.eval_ladder_start_elo:
+        args.eval_ladder_max_elo = args.eval_ladder_start_elo
 
     ensure_system_packages(args.skip_system)
 
@@ -716,6 +874,12 @@ def main() -> None:
                 args.eval_every_epochs,
                 args.eval_ft_compression,
                 args.serialize_verbose,
+                args.eval_ladder,
+                args.eval_ladder_start_elo,
+                args.eval_ladder_step,
+                args.eval_ladder_games,
+                args.eval_ladder_win_rate,
+                args.eval_ladder_max_elo,
                 min_ckpt_mtime,
                 stop_event,
             ),
@@ -746,6 +910,12 @@ def main() -> None:
             eval_max_moves=args.eval_max_moves,
             eval_ft_compression=args.eval_ft_compression,
             serialize_verbose=args.serialize_verbose,
+            eval_ladder=args.eval_ladder,
+            ladder_start_elo=args.eval_ladder_start_elo,
+            ladder_step=args.eval_ladder_step,
+            ladder_games=args.eval_ladder_games,
+            ladder_win_rate=args.eval_ladder_win_rate,
+            ladder_max_elo=args.eval_ladder_max_elo,
         )
 
     print("Training complete.")
