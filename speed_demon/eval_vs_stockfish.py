@@ -46,6 +46,24 @@ def _play_game(
     return board.result()
 
 
+def _configure_base_engine(
+    engine: chess.engine.SimpleEngine,
+    base_nnue: Optional[str],
+    threads: int,
+    hash_mb: int,
+) -> None:
+    _configure_engine(engine, threads, hash_mb)
+    if base_nnue:
+        if "EvalFile" not in engine.options:
+            raise RuntimeError("Stockfish does not support EvalFile option.")
+        engine.configure({"EvalFile": base_nnue})
+        if "Use NNUE" in engine.options:
+            engine.configure({"Use NNUE": True})
+    else:
+        if "Use NNUE" in engine.options:
+            engine.configure({"Use NNUE": False})
+
+
 def evaluate(
     nnue_path: str,
     stockfish_path: str,
@@ -56,7 +74,8 @@ def evaluate(
     hash_mb: int,
     csv_path: Optional[str],
     epoch: Optional[int],
-) -> dict:
+    base_nnue: Optional[str],
+) -> Optional[dict]:
     nnue_path = os.path.abspath(nnue_path)
     stockfish_path = os.path.abspath(stockfish_path)
 
@@ -64,12 +83,17 @@ def evaluate(
     engine_test = chess.engine.SimpleEngine.popen_uci(stockfish_path)
 
     try:
-        _configure_engine(engine_base, threads, hash_mb)
+        _configure_base_engine(engine_base, base_nnue, threads, hash_mb)
         _configure_engine(engine_test, threads, hash_mb)
 
         if "EvalFile" not in engine_test.options:
             raise RuntimeError("Stockfish binary does not support EvalFile option.")
         engine_test.configure({"EvalFile": nnue_path})
+        if "Use NNUE" in engine_test.options:
+            engine_test.configure({"Use NNUE": True})
+
+        engine_base.ping()
+        engine_test.ping()
 
         wins = 0
         draws = 0
@@ -134,9 +158,18 @@ def evaluate(
                 writer.writerow(metrics)
 
         return metrics
+    except Exception as exc:
+        print(f"Eval failed: {exc}")
+        return None
     finally:
-        engine_base.quit()
-        engine_test.quit()
+        try:
+            engine_base.quit()
+        except Exception:
+            pass
+        try:
+            engine_test.quit()
+        except Exception:
+            pass
 
 
 def main() -> None:
@@ -148,6 +181,12 @@ def main() -> None:
     parser.add_argument("--max-moves", type=int, default=200, help="Max moves per game")
     parser.add_argument("--threads", type=int, default=1, help="Stockfish threads")
     parser.add_argument("--hash-mb", type=int, default=128, help="Stockfish hash size (MB)")
+    parser.add_argument(
+        "--stockfish-base-nnue",
+        type=str,
+        default=None,
+        help="Optional baseline NNUE file for Stockfish base engine",
+    )
     parser.add_argument("--csv", type=str, default=None, help="CSV log path")
     parser.add_argument("--epoch", type=int, default=None, help="Epoch number")
     args = parser.parse_args()
@@ -162,7 +201,11 @@ def main() -> None:
         hash_mb=args.hash_mb,
         csv_path=args.csv,
         epoch=args.epoch,
+        base_nnue=args.stockfish_base_nnue,
     )
+
+    if metrics is None:
+        return
 
     print("Eval results:")
     print(

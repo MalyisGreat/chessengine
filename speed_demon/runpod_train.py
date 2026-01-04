@@ -182,6 +182,18 @@ def ensure_stockfish(explicit_path: Optional[str]) -> str:
     raise RuntimeError("Stockfish binary not found after extraction.")
 
 
+def find_baseline_nnue(stockfish_path: str) -> Optional[str]:
+    root = Path(stockfish_path).resolve().parent
+    candidates = list(root.glob("nn-*.nnue")) + list(root.glob("*.nnue"))
+    if not candidates:
+        parent = root.parent
+        candidates = list(parent.glob("nn-*.nnue")) + list(parent.glob("*.nnue"))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return str(candidates[0])
+
+
 def download_dataset(output_path: Path, url: str, skip: bool) -> None:
     if skip:
         return
@@ -213,6 +225,7 @@ def eval_watcher(
     l2: int,
     l3: int,
     stockfish_path: str,
+    base_nnue: Optional[str],
     eval_games: int,
     eval_time_per_move: float,
     eval_max_moves: int,
@@ -253,26 +266,29 @@ def eval_watcher(
                 cwd=repo_path,
             )
 
-            run(
-                [
-                    sys.executable,
-                    str(eval_script),
-                    "--nnue",
-                    str(nnue_path),
-                    "--stockfish",
-                    stockfish_path,
-                    "--games",
-                    str(eval_games),
-                    "--time-per-move",
-                    str(eval_time_per_move),
-                    "--max-moves",
-                    str(eval_max_moves),
-                    "--csv",
-                    str(eval_csv),
-                    "--epoch",
-                    str(epoch + 1),
-                ]
-            )
+            cmd = [
+                sys.executable,
+                str(eval_script),
+                "--nnue",
+                str(nnue_path),
+                "--stockfish",
+                stockfish_path,
+                "--games",
+                str(eval_games),
+                "--time-per-move",
+                str(eval_time_per_move),
+                "--max-moves",
+                str(eval_max_moves),
+                "--csv",
+                str(eval_csv),
+                "--epoch",
+                str(epoch + 1),
+            ]
+            if base_nnue:
+                cmd += ["--stockfish-base-nnue", base_nnue]
+            result = subprocess.run(cmd)
+            if result.returncode != 0:
+                print(f"Eval command failed (code {result.returncode}). Continuing.")
 
         if (output_dir / "training_finished").exists():
             return
@@ -311,6 +327,7 @@ def main() -> None:
     parser.add_argument("--eval-max-moves", type=int, default=200)
     parser.add_argument("--eval-every-epochs", type=int, default=1)
     parser.add_argument("--stockfish-path", type=str, default=None)
+    parser.add_argument("--stockfish-base-nnue", type=str, default=None)
     parser.add_argument("--repo-path", type=str, default=str(ROOT / "third_party" / "nnue-pytorch"))
     args = parser.parse_args()
 
@@ -340,7 +357,12 @@ def main() -> None:
     ensure_data_loader(repo_path, args.skip_compile)
 
     stockfish_path = ensure_stockfish(args.stockfish_path)
+    base_nnue = args.stockfish_base_nnue or find_baseline_nnue(stockfish_path)
     print(f"Stockfish: {stockfish_path}")
+    if base_nnue:
+        print(f"Baseline NNUE: {base_nnue}")
+    else:
+        print("Baseline NNUE not found, base engine will use classical eval.")
 
     output_dir = ROOT / "outputs" / "speed_demon"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -394,6 +416,7 @@ def main() -> None:
                 args.l2,
                 args.l3,
                 stockfish_path,
+                base_nnue,
                 args.eval_games,
                 args.eval_time_per_move,
                 args.eval_max_moves,
