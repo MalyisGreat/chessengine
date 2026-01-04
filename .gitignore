@@ -36,11 +36,14 @@ data/raw/
 data/processed/
 data/train/
 data/cache/
+data/binpack/
 *.pgn
 *.pgn.zst
 *.7z
 *.zip
 *.npz
+*.binpack
+*.zst
 
 # Model outputs
 outputs/
@@ -55,6 +58,10 @@ runs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Third-party clones
+third_party/
+nnue-pytorch/
 
 # Jupyter
 .ipynb_checkpoints/

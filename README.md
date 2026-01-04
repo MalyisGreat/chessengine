@@ -1,5 +1,31 @@
 # Chess Engine
 
+## Speed Demon NNUE (RunPod single command)
+
+This adds a new NNUE training pipeline (HalfKP, 256x32x32, int8) that trains on
+Linrock T80 binpack and runs Stockfish eval games after each epoch.
+
+Single command on RunPod:
+
+```bash
+python speed_demon/runpod_train.py
+```
+
+Defaults:
+- 20M positions total (5M per epoch x 4 epochs)
+- Stockfish eval after every epoch
+- Outputs to `./outputs/speed_demon`
+- Eval results CSV: `./outputs/speed_demon/eval/eval.csv`
+
+Useful overrides:
+
+```bash
+python speed_demon/runpod_train.py --positions 20000000 --positions-per-epoch 5000000 --eval-games 10
+python speed_demon/runpod_train.py --skip-download --skip-install
+```
+
+Legacy CNN training pipeline is still available below.
+
 A superhuman chess engine trained using supervised learning on 316M Stockfish-evaluated positions. Achieves ~3000 ELO in under 1 hour on 5x H100 GPUs.
 
 ## Quick Start (One Command)

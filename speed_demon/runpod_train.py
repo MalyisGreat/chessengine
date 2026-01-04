@@ -1,0 +1,394 @@
+import argparse
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import threading
+import time
+from pathlib import Path
+from typing import Optional
+from urllib.request import urlretrieve
+
+ROOT = Path(__file__).resolve().parents[1]
+NNUE_REPO_URL = "https://github.com/official-stockfish/nnue-pytorch.git"
+DEFAULT_DATA_URL = (
+    "https://huggingface.co/datasets/linrock/test80-2024/resolve/main/"
+    "test80-2024-01-jan-2tb7p.min-v2.v6.binpack.zst"
+)
+
+
+def run(cmd, cwd=None, env=None, check=True):
+    print(f"Running: {' '.join(cmd)}")
+    result = subprocess.run(cmd, cwd=cwd, env=env)
+    if check and result.returncode != 0:
+        raise RuntimeError(f"Command failed: {' '.join(cmd)}")
+    return result.returncode
+
+
+def ensure_system_packages(skip: bool) -> None:
+    if skip:
+        return
+    if platform.system().lower() != "linux":
+        print("System package install skipped (non-Linux).")
+        return
+    if shutil.which("apt-get") is None:
+        print("apt-get not found; skipping system package install.")
+        return
+
+    env = os.environ.copy()
+    env["DEBIAN_FRONTEND"] = "noninteractive"
+    run(["apt-get", "update"], env=env)
+    run(
+        [
+            "apt-get",
+            "install",
+            "-y",
+            "git",
+            "cmake",
+            "build-essential",
+            "zstd",
+            "curl",
+            "unzip",
+        ],
+        env=env,
+    )
+
+
+def ensure_python_packages(nnue_repo: Path, skip: bool) -> None:
+    if skip:
+        return
+    req_path = nnue_repo / "requirements.txt"
+    run([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+    run([sys.executable, "-m", "pip", "install", "-r", str(req_path)])
+
+    try:
+        import torch  # noqa: F401
+
+        torch_ok = True
+    except Exception:
+        torch_ok = False
+
+    if not torch_ok:
+        run([sys.executable, "-m", "pip", "install", "torch"])
+
+    run([sys.executable, "-m", "pip", "install", "zstandard"])
+
+
+def ensure_nnue_repo(repo_path: Path) -> None:
+    if repo_path.exists():
+        return
+    repo_path.parent.mkdir(parents=True, exist_ok=True)
+    run(["git", "clone", NNUE_REPO_URL, str(repo_path)])
+
+
+def patch_nnue(repo_path: Path) -> None:
+    patch_script = ROOT / "speed_demon" / "patch_nnue_pytorch.py"
+    run([sys.executable, str(patch_script), "--repo", str(repo_path)])
+
+
+def ensure_data_loader(repo_path: Path, skip: bool) -> None:
+    if skip:
+        return
+    for ext in (".so", ".dylib", ".dll"):
+        if (repo_path / f"training_data_loader{ext}").exists():
+            return
+
+    build_dir = repo_path / "build"
+    run(
+        [
+            "cmake",
+            "-S",
+            ".",
+            "-B",
+            str(build_dir),
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_INSTALL_PREFIX=.",
+        ],
+        cwd=repo_path,
+    )
+    run(
+        ["cmake", "--build", str(build_dir), "--config", "Release", "--target", "install"],
+        cwd=repo_path,
+    )
+
+
+def ensure_stockfish(explicit_path: Optional[str]) -> str:
+    if explicit_path:
+        return explicit_path
+
+    env_path = os.environ.get("STOCKFISH_PATH")
+    if env_path and os.path.exists(env_path):
+        return env_path
+
+    for path in ("/usr/games/stockfish", "/usr/bin/stockfish"):
+        if os.path.exists(path):
+            return path
+
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    if system != "linux" or ("x86_64" not in machine and "amd64" not in machine):
+        raise RuntimeError("Stockfish auto-install only supported on Linux x86_64.")
+
+    stockfish_dir = Path.home() / ".stockfish"
+    stockfish_dir.mkdir(parents=True, exist_ok=True)
+    url = (
+        "https://github.com/official-stockfish/Stockfish/releases/download/"
+        "sf_16.1/stockfish-ubuntu-x86-64-avx2.tar"
+    )
+    archive_path = stockfish_dir / "stockfish-ubuntu-x86-64-avx2.tar"
+
+    if not archive_path.exists():
+        print(f"Downloading Stockfish: {url}")
+        urlretrieve(url, archive_path)
+
+    extract_dir = stockfish_dir / "stockfish"
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive_path, "r") as tar:
+        tar.extractall(extract_dir)
+
+    for root, _, files in os.walk(extract_dir):
+        for name in files:
+            if "stockfish" in name and not name.endswith((".tar", ".zip")):
+                path = os.path.join(root, name)
+                os.chmod(path, 0o755)
+                os.environ["STOCKFISH_PATH"] = path
+                return path
+
+    raise RuntimeError("Stockfish binary not found after extraction.")
+
+
+def download_dataset(output_path: Path, url: str, skip: bool) -> None:
+    if skip:
+        return
+    download_script = ROOT / "speed_demon" / "download_binpack.py"
+    run(
+        [
+            sys.executable,
+            str(download_script),
+            "--url",
+            url,
+            "--output",
+            str(output_path),
+        ]
+    )
+
+
+def _parse_epoch(path: Path) -> Optional[int]:
+    match = re.search(r"epoch=([0-9]+)", path.name)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def eval_watcher(
+    repo_path: Path,
+    output_dir: Path,
+    features: str,
+    l1: int,
+    l2: int,
+    l3: int,
+    stockfish_path: str,
+    eval_games: int,
+    eval_time_per_move: float,
+    eval_max_moves: int,
+    eval_every_epochs: int,
+    stop_event: threading.Event,
+) -> None:
+    seen = set()
+    nnue_dir = output_dir / "nnue"
+    eval_csv = output_dir / "eval" / "eval.csv"
+    eval_script = ROOT / "speed_demon" / "eval_vs_stockfish.py"
+
+    while not stop_event.is_set():
+        ckpts = sorted(output_dir.rglob("epoch=*.ckpt"))
+        for ckpt in ckpts:
+            if ckpt in seen:
+                continue
+            epoch = _parse_epoch(ckpt)
+            seen.add(ckpt)
+            if epoch is None or (epoch + 1) % eval_every_epochs != 0:
+                continue
+
+            nnue_dir.mkdir(parents=True, exist_ok=True)
+            nnue_path = nnue_dir / f"nn-epoch{epoch + 1}.nnue"
+            run(
+                [
+                    sys.executable,
+                    "serialize.py",
+                    str(ckpt),
+                    str(nnue_path),
+                    f"--features={features}",
+                    "--l1",
+                    str(l1),
+                    "--l2",
+                    str(l2),
+                    "--l3",
+                    str(l3),
+                ],
+                cwd=repo_path,
+            )
+
+            run(
+                [
+                    sys.executable,
+                    str(eval_script),
+                    "--nnue",
+                    str(nnue_path),
+                    "--stockfish",
+                    stockfish_path,
+                    "--games",
+                    str(eval_games),
+                    "--time-per-move",
+                    str(eval_time_per_move),
+                    "--max-moves",
+                    str(eval_max_moves),
+                    "--csv",
+                    str(eval_csv),
+                    "--epoch",
+                    str(epoch + 1),
+                ]
+            )
+
+        if (output_dir / "training_finished").exists():
+            return
+
+        time.sleep(15)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run Speed Demon NNUE training")
+    parser.add_argument("--skip-system", action="store_true", help="Skip apt installs")
+    parser.add_argument("--skip-install", action="store_true", help="Skip pip installs")
+    parser.add_argument("--skip-download", action="store_true", help="Skip dataset download")
+    parser.add_argument("--skip-compile", action="store_true", help="Skip data loader build")
+    parser.add_argument("--skip-eval", action="store_true", help="Skip eval watcher")
+    parser.add_argument("--data-url", type=str, default=DEFAULT_DATA_URL)
+    parser.add_argument(
+        "--data-path",
+        type=str,
+        default=str(ROOT / "data" / "binpack" / "training_data.binpack"),
+    )
+    parser.add_argument("--positions", type=int, default=20_000_000)
+    parser.add_argument("--positions-per-epoch", type=int, default=5_000_000)
+    parser.add_argument("--batch-size", type=int, default=16384)
+    parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--features", type=str, default="HalfKP")
+    parser.add_argument("--l1", type=int, default=256)
+    parser.add_argument("--l2", type=int, default=32)
+    parser.add_argument("--l3", type=int, default=32)
+    parser.add_argument("--lambda", dest="lambda_", type=float, default=1.0)
+    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--threads", type=int, default=4)
+    parser.add_argument("--gpus", type=str, default=None)
+    parser.add_argument("--validation-size", type=int, default=100_000)
+    parser.add_argument("--eval-games", type=int, default=8)
+    parser.add_argument("--eval-time-per-move", type=float, default=0.05)
+    parser.add_argument("--eval-max-moves", type=int, default=200)
+    parser.add_argument("--eval-every-epochs", type=int, default=1)
+    parser.add_argument("--stockfish-path", type=str, default=None)
+    parser.add_argument("--repo-path", type=str, default=str(ROOT / "third_party" / "nnue-pytorch"))
+    args = parser.parse_args()
+
+    positions_per_epoch = min(args.positions, args.positions_per_epoch)
+    epochs = args.epochs
+    if epochs is None:
+        epochs = max(1, (args.positions + positions_per_epoch - 1) // positions_per_epoch)
+
+    print("Speed Demon NNUE config:")
+    print(f"  Positions:         {args.positions}")
+    print(f"  Positions/epoch:   {positions_per_epoch}")
+    print(f"  Epochs:            {epochs}")
+    print(f"  Batch size:        {args.batch_size}")
+    print(f"  Features:          {args.features}")
+    print(f"  Layers:            {args.l1}/{args.l2}/{args.l3}")
+    print(f"  Lambda:            {args.lambda_}")
+
+    ensure_system_packages(args.skip_system)
+
+    repo_path = Path(args.repo_path)
+    ensure_nnue_repo(repo_path)
+    patch_nnue(repo_path)
+    ensure_python_packages(repo_path, args.skip_install)
+
+    data_path = Path(args.data_path)
+    download_dataset(data_path, args.data_url, args.skip_download)
+    ensure_data_loader(repo_path, args.skip_compile)
+
+    stockfish_path = ensure_stockfish(args.stockfish_path)
+    print(f"Stockfish: {stockfish_path}")
+
+    output_dir = ROOT / "outputs" / "speed_demon"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    train_cmd = [
+        sys.executable,
+        "train.py",
+        str(data_path),
+        "--default_root_dir",
+        str(output_dir),
+        "--max_epochs",
+        str(epochs),
+        "--epoch-size",
+        str(positions_per_epoch),
+        "--batch-size",
+        str(args.batch_size),
+        "--lambda",
+        str(args.lambda_),
+        "--features",
+        args.features,
+        "--l1",
+        str(args.l1),
+        "--l2",
+        str(args.l2),
+        "--l3",
+        str(args.l3),
+        "--num-workers",
+        str(args.num_workers),
+        "--threads",
+        str(args.threads),
+        "--network-save-period",
+        "1",
+        "--save-last-network",
+        "True",
+        "--validation-size",
+        str(args.validation_size),
+    ]
+    if args.gpus:
+        train_cmd += ["--gpus", args.gpus]
+
+    stop_event = threading.Event()
+    watcher_thread = None
+    if not args.skip_eval:
+        watcher_thread = threading.Thread(
+            target=eval_watcher,
+            args=(
+                repo_path,
+                output_dir,
+                args.features,
+                args.l1,
+                args.l2,
+                args.l3,
+                stockfish_path,
+                args.eval_games,
+                args.eval_time_per_move,
+                args.eval_max_moves,
+                args.eval_every_epochs,
+                stop_event,
+            ),
+            daemon=True,
+        )
+        watcher_thread.start()
+
+    run(train_cmd, cwd=repo_path)
+    stop_event.set()
+    if watcher_thread:
+        watcher_thread.join()
+
+    print("Training complete.")
+
+
+if __name__ == "__main__":
+    main()
