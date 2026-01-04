@@ -262,6 +262,63 @@ def _parse_epoch(path: Path) -> Optional[int]:
     return int(match.group(1))
 
 
+def _tail_log(path: Path, max_bytes: int = 20000) -> str:
+    try:
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            data = f.read().decode(errors="replace")
+        return "\n".join(data.splitlines()[-50:])
+    except Exception:
+        return ""
+
+
+def _run_serialization(
+    repo_path: Path,
+    output_dir: Path,
+    ckpt: Path,
+    nnue_path: Path,
+    features: str,
+    l1: int,
+    l2: int,
+    l3: int,
+    eval_ft_compression: str,
+    verbose: bool,
+) -> bool:
+    cmd = [
+        sys.executable,
+        "serialize.py",
+        str(ckpt),
+        str(nnue_path),
+        f"--features={features}",
+        "--l1",
+        str(l1),
+        "--l2",
+        str(l2),
+        "--l3",
+        str(l3),
+        "--ft_compression",
+        eval_ft_compression,
+    ]
+    if verbose:
+        result = subprocess.run(cmd, cwd=repo_path)
+    else:
+        log_dir = output_dir / "serialize_logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"{nnue_path.stem}.log"
+        with log_path.open("w", encoding="utf-8") as log:
+            result = subprocess.run(cmd, cwd=repo_path, stdout=log, stderr=log)
+    if result.returncode != 0:
+        print(f"Serialize failed for {ckpt}.")
+        if not verbose:
+            tail = _tail_log(log_path)
+            if tail:
+                print(tail)
+        return False
+    return True
+
+
 def eval_watcher(
     repo_path: Path,
     output_dir: Path,
@@ -279,6 +336,7 @@ def eval_watcher(
     eval_max_moves: int,
     eval_every_epochs: int,
     eval_ft_compression: str,
+    serialize_verbose: bool,
     min_ckpt_mtime: float,
     stop_event: threading.Event,
 ) -> None:
@@ -305,27 +363,18 @@ def eval_watcher(
 
             nnue_dir.mkdir(parents=True, exist_ok=True)
             nnue_path = nnue_dir / f"nn-epoch{epoch + 1}.nnue"
-            rc = run(
-                [
-                    sys.executable,
-                    "serialize.py",
-                    str(ckpt),
-                    str(nnue_path),
-                    f"--features={features}",
-                    "--l1",
-                    str(l1),
-                    "--l2",
-                    str(l2),
-                    "--l3",
-                    str(l3),
-                    "--ft_compression",
-                    eval_ft_compression,
-                ],
-                cwd=repo_path,
-                check=False,
-            )
-            if rc != 0:
-                print(f"Serialize failed for {ckpt}. Continuing.")
+            if not _run_serialization(
+                repo_path=repo_path,
+                output_dir=output_dir,
+                ckpt=ckpt,
+                nnue_path=nnue_path,
+                features=features,
+                l1=l1,
+                l2=l2,
+                l3=l3,
+                eval_ft_compression=eval_ft_compression,
+                verbose=serialize_verbose,
+            ):
                 continue
 
             cmd = [
@@ -405,6 +454,7 @@ def _run_final_eval(
     eval_time_per_move: float,
     eval_max_moves: int,
     eval_ft_compression: str,
+    serialize_verbose: bool,
 ) -> None:
     ckpt = _latest_checkpoint(output_dir)
     if not ckpt:
@@ -426,27 +476,18 @@ def _run_final_eval(
     nnue_dir.mkdir(parents=True, exist_ok=True)
     nnue_path = nnue_dir / f"nn-epoch{epoch_label}.nnue"
     if not nnue_path.exists():
-        rc = run(
-            [
-                sys.executable,
-                "serialize.py",
-                str(ckpt),
-                str(nnue_path),
-                f"--features={features}",
-                "--l1",
-                str(l1),
-                "--l2",
-                str(l2),
-                "--l3",
-                str(l3),
-                "--ft_compression",
-                eval_ft_compression,
-            ],
-            cwd=repo_path,
-            check=False,
-        )
-        if rc != 0:
-            print(f"Serialize failed for {ckpt}. Skipping final eval.")
+        if not _run_serialization(
+            repo_path=repo_path,
+            output_dir=output_dir,
+            ckpt=ckpt,
+            nnue_path=nnue_path,
+            features=features,
+            l1=l1,
+            l2=l2,
+            l3=l3,
+            eval_ft_compression=eval_ft_compression,
+            verbose=serialize_verbose,
+        ):
             return
 
     eval_script = ROOT / "speed_demon" / "eval_vs_stockfish.py"
@@ -549,6 +590,11 @@ def main() -> None:
         "--stockfish-compat",
         action="store_true",
         help="Use Stockfish 16.1 compatible NNUE settings (HalfKAv2_hm, 2560/15/32).",
+    )
+    parser.add_argument(
+        "--serialize-verbose",
+        action="store_true",
+        help="Print serializer output (weight histograms).",
     )
     parser.add_argument("--repo-path", type=str, default=str(ROOT / "third_party" / "nnue-pytorch"))
     args = parser.parse_args()
@@ -669,6 +715,7 @@ def main() -> None:
                 args.eval_max_moves,
                 args.eval_every_epochs,
                 args.eval_ft_compression,
+                args.serialize_verbose,
                 min_ckpt_mtime,
                 stop_event,
             ),
@@ -698,6 +745,7 @@ def main() -> None:
             eval_time_per_move=args.eval_time_per_move,
             eval_max_moves=args.eval_max_moves,
             eval_ft_compression=args.eval_ft_compression,
+            serialize_verbose=args.serialize_verbose,
         )
 
     print("Training complete.")
