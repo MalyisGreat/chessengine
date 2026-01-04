@@ -248,6 +248,11 @@ def download_dataset(
     urls_file: Optional[str],
     skip: bool,
     max_gb: Optional[float],
+    resume: bool,
+    retries: int,
+    retry_backoff: float,
+    connect_timeout: float,
+    read_timeout: float,
 ) -> None:
     if skip:
         return
@@ -267,6 +272,18 @@ def download_dataset(
         cmd += ["--url", DEFAULT_DATA_URL]
     if max_gb is not None:
         cmd += ["--max-gb", str(max_gb)]
+    if resume:
+        cmd += ["--resume"]
+    cmd += [
+        "--retries",
+        str(retries),
+        "--retry-backoff",
+        str(retry_backoff),
+        "--connect-timeout",
+        str(connect_timeout),
+        "--read-timeout",
+        str(read_timeout),
+    ]
     run(cmd)
 
 
@@ -765,6 +782,35 @@ def main() -> None:
         default=None,
         help="Download only the first N GB of the binpack dataset (chunk-aligned).",
     )
+    parser.add_argument(
+        "--download-resume",
+        action="store_true",
+        help="Resume multi-URL dataset downloads using a .resume.json state file.",
+    )
+    parser.add_argument(
+        "--download-retries",
+        type=int,
+        default=5,
+        help="Retries per URL during dataset download.",
+    )
+    parser.add_argument(
+        "--download-retry-backoff",
+        type=float,
+        default=5.0,
+        help="Base seconds for download retry backoff.",
+    )
+    parser.add_argument(
+        "--download-connect-timeout",
+        type=float,
+        default=30.0,
+        help="Download connect timeout in seconds.",
+    )
+    parser.add_argument(
+        "--download-read-timeout",
+        type=float,
+        default=300.0,
+        help="Download read timeout in seconds.",
+    )
     parser.add_argument("--positions", type=int, default=20_000_000)
     parser.add_argument("--positions-per-epoch", type=int, default=5_000_000)
     parser.add_argument("--batch-size", type=int, default=16384)
@@ -931,6 +977,11 @@ def main() -> None:
         args.data_urls_file,
         args.skip_download,
         args.data_max_gb,
+        args.download_resume,
+        args.download_retries,
+        args.download_retry_backoff,
+        args.download_connect_timeout,
+        args.download_read_timeout,
     )
     ensure_data_loader(repo_path, args.skip_compile)
 

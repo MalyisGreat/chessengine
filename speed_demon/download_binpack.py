@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import sys
 import time
@@ -29,7 +30,7 @@ def _write_binpack_limited(
     max_bytes: int,
     start_time: Optional[float] = None,
     written_offset: int = 0,
-) -> int:
+) -> tuple[int, bool]:
     pending = bytearray()
     written = 0
     header = None
@@ -59,7 +60,7 @@ def _write_binpack_limited(
                     break
                 if written + 8 + chunk_size > max_bytes:
                     _print_progress(written_offset + written, start_time)
-                    return written
+                    return written, True
                 output_file.write(header)
                 output_file.write(pending[:chunk_size])
                 del pending[:chunk_size]
@@ -72,7 +73,33 @@ def _write_binpack_limited(
             break
 
     _print_progress(written_offset + written, start_time)
-    return written
+    return written, False
+
+
+def _load_resume_state(path: str) -> Optional[dict]:
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        completed = data.get("completed_urls", [])
+        total_written = int(data.get("total_written", 0))
+        if not isinstance(completed, list):
+            return None
+        return {"completed_urls": completed, "total_written": total_written}
+    except Exception:
+        return None
+
+
+def _save_resume_state(path: str, completed_urls: list[str], total_written: int) -> None:
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(
+            {"completed_urls": completed_urls, "total_written": total_written},
+            handle,
+            sort_keys=True,
+        )
+    os.replace(tmp_path, path)
 
 
 def _load_urls(url_args, urls_file: Optional[str]) -> list[str]:
@@ -101,6 +128,11 @@ def download_and_decompress(
     chunk_mb: int = 1,
     max_gb: Optional[float] = None,
     append: bool = False,
+    resume: bool = False,
+    retries: int = 5,
+    retry_backoff: float = 5.0,
+    connect_timeout: float = 30.0,
+    read_timeout: float = 300.0,
 ) -> None:
     print("--- DATASET ACQUISITION ---")
     if len(urls) == 1:
@@ -111,9 +143,15 @@ def download_and_decompress(
             print(f"  {idx:02d}: {url}")
     print(f"Target: {output_path}")
 
-    if os.path.exists(output_path) and not append:
+    state_path = f"{output_path}.resume.json"
+    resume_state = _load_resume_state(state_path) if resume else None
+    if os.path.exists(output_path) and not append and not resume:
         print(f"File already exists: {output_path}")
         print("Delete it or pass --append to extend it.")
+        return
+    if resume and os.path.exists(output_path) and resume_state is None:
+        print(f"Resume requested but no resume state found at {state_path}.")
+        print("Delete the output file or rerun without --resume.")
         return
 
     output_dir = os.path.dirname(output_path)
@@ -121,46 +159,100 @@ def download_and_decompress(
         os.makedirs(output_dir, exist_ok=True)
 
     max_bytes = int(max_gb * (1024**3)) if max_gb is not None else None
-    mode = "ab" if append else "wb"
+    mode = "ab" if append or resume else "wb"
     total_written = 0
-    if append and os.path.exists(output_path):
-        total_written = os.path.getsize(output_path)
-        if max_bytes is not None and total_written >= max_bytes:
+    completed_urls: list[str] = []
+    if resume_state:
+        completed_urls = list(resume_state["completed_urls"])
+        total_written = int(resume_state["total_written"])
+        if os.path.exists(output_path):
+            actual_size = os.path.getsize(output_path)
+            if actual_size != total_written:
+                print(
+                    f"Truncating output to resume point "
+                    f"({actual_size / (1024**3):.2f} -> {total_written / (1024**3):.2f} GB)."
+                )
+                with open(output_path, "ab") as output_file:
+                    output_file.truncate(total_written)
+        else:
+            total_written = 0
+        if completed_urls:
             print(
-                f"Output already has {total_written / (1024**3):.2f} GB; max-gb reached."
+                f"Resuming: {len(completed_urls)} completed, "
+                f"{total_written / (1024**3):.2f} GB written."
             )
-            return
+    elif append and os.path.exists(output_path):
+        total_written = os.path.getsize(output_path)
+
+    if max_bytes is not None and total_written >= max_bytes:
+        print(
+            f"Output already has {total_written / (1024**3):.2f} GB; max-gb reached."
+        )
+        return
+
+    pending_urls = [url for url in urls if url not in completed_urls]
+    if not pending_urls:
+        print("All URLs already completed.")
+        return
 
     start_time = time.time()
+    timeout = (connect_timeout, read_timeout)
     with open(output_path, mode) as output_file:
-        for idx, url in enumerate(urls, start=1):
+        for idx, url in enumerate(pending_urls, start=1):
             remaining = None if max_bytes is None else max_bytes - total_written
             if remaining is not None and remaining <= 0:
                 print("\nReached max-gb limit.")
                 break
-            print(f"Downloading and decompressing ({idx}/{len(urls)}): {url}")
-            response = requests.get(url, stream=True, timeout=60)
-            response.raise_for_status()
-            dctx = zstd.ZstdDecompressor()
-            with dctx.stream_reader(response.raw) as reader:
-                if remaining is not None:
-                    written = _write_binpack_limited(
-                        reader,
-                        output_file,
-                        chunk_mb,
-                        remaining,
-                        start_time=start_time,
-                        written_offset=total_written,
+            print(f"Downloading and decompressing ({idx}/{len(pending_urls)}): {url}")
+            shard_start = total_written
+            attempt = 0
+            while True:
+                attempt += 1
+                try:
+                    response = requests.get(url, stream=True, timeout=timeout)
+                    response.raise_for_status()
+                    dctx = zstd.ZstdDecompressor()
+                    with dctx.stream_reader(response.raw) as reader:
+                        if remaining is not None:
+                            written, reached_limit = _write_binpack_limited(
+                                reader,
+                                output_file,
+                                chunk_mb,
+                                remaining,
+                                start_time=start_time,
+                                written_offset=total_written,
+                            )
+                            total_written += written
+                            if reached_limit:
+                                print("\nReached max-gb limit.")
+                                break
+                        else:
+                            while True:
+                                chunk = reader.read(chunk_mb * 1024 * 1024)
+                                if not chunk:
+                                    break
+                                output_file.write(chunk)
+                                total_written += len(chunk)
+                                _print_progress(total_written, start_time)
+                    if resume:
+                        completed_urls.append(url)
+                        _save_resume_state(state_path, completed_urls, total_written)
+                    break
+                except Exception as exc:
+                    output_file.flush()
+                    output_file.seek(shard_start)
+                    output_file.truncate()
+                    total_written = shard_start
+                    if attempt >= retries:
+                        raise
+                    wait_s = retry_backoff * attempt
+                    print(
+                        f"\nWarning: download failed ({exc}). "
+                        f"Retry {attempt}/{retries} in {wait_s:.1f}s..."
                     )
-                    total_written += written
-                else:
-                    while True:
-                        chunk = reader.read(chunk_mb * 1024 * 1024)
-                        if not chunk:
-                            break
-                        output_file.write(chunk)
-                        total_written += len(chunk)
-                        _print_progress(total_written, start_time)
+                    time.sleep(wait_s)
+            if remaining is not None and total_written >= max_bytes:
+                break
 
     print("\nDone. Dataset is ready.")
 
@@ -201,6 +293,35 @@ def main() -> None:
         action="store_true",
         help="Append to an existing output file instead of skipping it.",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume a multi-URL download using a .resume.json state file.",
+    )
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=5,
+        help="Retries per URL before failing.",
+    )
+    parser.add_argument(
+        "--retry-backoff",
+        type=float,
+        default=5.0,
+        help="Base seconds to wait between retries (multiplied by attempt).",
+    )
+    parser.add_argument(
+        "--connect-timeout",
+        type=float,
+        default=30.0,
+        help="Connect timeout in seconds.",
+    )
+    parser.add_argument(
+        "--read-timeout",
+        type=float,
+        default=300.0,
+        help="Read timeout in seconds.",
+    )
     args = parser.parse_args()
 
     urls = _load_urls(args.url, args.urls_file)
@@ -210,6 +331,11 @@ def main() -> None:
         args.chunk_mb,
         args.max_gb,
         append=args.append,
+        resume=args.resume,
+        retries=args.retries,
+        retry_backoff=args.retry_backoff,
+        connect_timeout=args.connect_timeout,
+        read_timeout=args.read_timeout,
     )
 
 
