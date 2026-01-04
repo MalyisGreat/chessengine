@@ -74,6 +74,28 @@ def ensure_python_packages(nnue_repo: Path, skip: bool) -> None:
     if not torch_ok:
         run([sys.executable, "-m", "pip", "install", "torch"])
 
+    try:
+        import cupy  # noqa: F401
+
+        cupy_ok = True
+    except Exception:
+        cupy_ok = False
+
+    if not cupy_ok:
+        cuda_version = None
+        try:
+            import torch as _torch
+
+            cuda_version = _torch.version.cuda
+        except Exception:
+            cuda_version = None
+
+        if cuda_version and cuda_version.startswith("11"):
+            cupy_pkg = "cupy-cuda11x"
+        else:
+            cupy_pkg = "cupy-cuda12x"
+        run([sys.executable, "-m", "pip", "install", cupy_pkg])
+
     run([sys.executable, "-m", "pip", "install", "zstandard"])
 
 
