@@ -22,6 +22,7 @@ Notes:
 - Stockfish 16.1 requires HalfKAv2_hm with 2560/15/32. The Speed Demon
   256/32/32 net is not Stockfish-compatible, so eval will fail unless you
   switch to `--stockfish-compat` or `--skip-eval`.
+- By default, base Stockfish uses its own built-in nets for eval games.
 
 Useful overrides:
 
@@ -30,6 +31,7 @@ python speed_demon/runpod_train.py --positions 20000000 --positions-per-epoch 50
 python speed_demon/runpod_train.py --skip-download --skip-install
 python speed_demon/runpod_train.py --stockfish-compat
 python speed_demon/runpod_train.py --skip-eval
+python speed_demon/runpod_train.py --stockfish-classical-base
 ```
 
 Legacy CNN training pipeline is still available below.

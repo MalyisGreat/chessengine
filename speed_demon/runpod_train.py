@@ -269,6 +269,7 @@ def eval_watcher(
     l3: int,
     stockfish_path: str,
     base_nnue: Optional[str],
+    base_classical: bool,
     eval_games: int,
     eval_time_per_move: float,
     eval_max_moves: int,
@@ -340,9 +341,13 @@ def eval_watcher(
                 str(eval_csv),
                 "--epoch",
                 str(epoch + 1),
+                "--debug-dir",
+                str(output_dir / "eval" / "debug"),
             ]
             if base_nnue:
                 cmd += ["--stockfish-base-nnue", base_nnue]
+            if base_classical:
+                cmd += ["--stockfish-classical-base"]
             result = subprocess.run(cmd)
             if result.returncode != 0:
                 print(f"Eval command failed (code {result.returncode}). Continuing.")
@@ -392,6 +397,11 @@ def main() -> None:
     )
     parser.add_argument("--stockfish-path", type=str, default=None)
     parser.add_argument("--stockfish-base-nnue", type=str, default=None)
+    parser.add_argument(
+        "--stockfish-classical-base",
+        action="store_true",
+        help="Disable NNUE for the base Stockfish engine during eval.",
+    )
     parser.add_argument(
         "--stockfish-compat",
         action="store_true",
@@ -445,12 +455,14 @@ def main() -> None:
 
     stockfish_path = ensure_stockfish(args.stockfish_path)
     ensure_stockfish_nets(stockfish_path)
-    base_nnue = args.stockfish_base_nnue or find_baseline_nnue(stockfish_path)
+    base_nnue = args.stockfish_base_nnue
     print(f"Stockfish: {stockfish_path}")
     if base_nnue:
         print(f"Baseline NNUE: {base_nnue}")
+    elif args.stockfish_classical_base:
+        print("Baseline NNUE disabled, base engine will use classical eval.")
     else:
-        print("Baseline NNUE not found, base engine will use classical eval.")
+        print("Baseline NNUE: using Stockfish defaults.")
 
     output_dir = ROOT / "outputs" / "speed_demon"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -506,6 +518,7 @@ def main() -> None:
                 args.l3,
                 stockfish_path,
                 base_nnue,
+                args.stockfish_classical_base,
                 args.eval_games,
                 args.eval_time_per_move,
                 args.eval_max_moves,

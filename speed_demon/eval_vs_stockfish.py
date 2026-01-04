@@ -51,6 +51,7 @@ def _configure_base_engine(
     base_nnue: Optional[str],
     threads: int,
     hash_mb: int,
+    force_classical: bool,
 ) -> None:
     _configure_engine(engine, threads, hash_mb)
     if base_nnue:
@@ -59,7 +60,7 @@ def _configure_base_engine(
         engine.configure({"EvalFile": base_nnue})
         if "Use NNUE" in engine.options:
             engine.configure({"Use NNUE": True})
-    else:
+    elif force_classical:
         if "Use NNUE" in engine.options:
             engine.configure({"Use NNUE": False})
 
@@ -75,6 +76,8 @@ def evaluate(
     csv_path: Optional[str],
     epoch: Optional[int],
     base_nnue: Optional[str],
+    force_classical: bool,
+    debug_dir: Optional[str],
 ) -> Optional[dict]:
     nnue_path = os.path.abspath(nnue_path)
     stockfish_path = os.path.abspath(stockfish_path)
@@ -83,8 +86,15 @@ def evaluate(
     engine_test = chess.engine.SimpleEngine.popen_uci(stockfish_path)
 
     try:
-        _configure_base_engine(engine_base, base_nnue, threads, hash_mb)
+        _configure_base_engine(engine_base, base_nnue, threads, hash_mb, force_classical)
         _configure_engine(engine_test, threads, hash_mb)
+
+        if debug_dir and "Debug Log File" in engine_base.options:
+            os.makedirs(debug_dir, exist_ok=True)
+            engine_base.configure({"Debug Log File": os.path.join(debug_dir, "base.log")})
+        if debug_dir and "Debug Log File" in engine_test.options:
+            os.makedirs(debug_dir, exist_ok=True)
+            engine_test.configure({"Debug Log File": os.path.join(debug_dir, "test.log")})
 
         if "EvalFile" not in engine_test.options:
             raise RuntimeError("Stockfish binary does not support EvalFile option.")
@@ -182,10 +192,21 @@ def main() -> None:
     parser.add_argument("--threads", type=int, default=1, help="Stockfish threads")
     parser.add_argument("--hash-mb", type=int, default=128, help="Stockfish hash size (MB)")
     parser.add_argument(
+        "--stockfish-classical-base",
+        action="store_true",
+        help="Disable NNUE for the base Stockfish engine.",
+    )
+    parser.add_argument(
         "--stockfish-base-nnue",
         type=str,
         default=None,
         help="Optional baseline NNUE file for Stockfish base engine",
+    )
+    parser.add_argument(
+        "--debug-dir",
+        type=str,
+        default=None,
+        help="Directory to write Stockfish debug logs (base.log/test.log).",
     )
     parser.add_argument("--csv", type=str, default=None, help="CSV log path")
     parser.add_argument("--epoch", type=int, default=None, help="Epoch number")
@@ -202,6 +223,8 @@ def main() -> None:
         csv_path=args.csv,
         epoch=args.epoch,
         base_nnue=args.stockfish_base_nnue,
+        force_classical=args.stockfish_classical_base,
+        debug_dir=args.debug_dir,
     )
 
     if metrics is None:
