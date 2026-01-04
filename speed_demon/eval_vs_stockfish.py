@@ -45,16 +45,23 @@ def _configure_strength(
 def _play_game(
     engine_white: chess.engine.SimpleEngine,
     engine_black: chess.engine.SimpleEngine,
-    time_per_move: float,
+    time_per_move_white: float,
+    time_per_move_black: float,
     max_moves: int,
 ) -> str:
     board = chess.Board()
-    limit = chess.engine.Limit(time=time_per_move)
+    limit_white = chess.engine.Limit(time=time_per_move_white)
+    limit_black = chess.engine.Limit(time=time_per_move_black)
 
     for _ in range(max_moves):
         if board.is_game_over():
             break
-        engine = engine_white if board.turn == chess.WHITE else engine_black
+        if board.turn == chess.WHITE:
+            engine = engine_white
+            limit = limit_white
+        else:
+            engine = engine_black
+            limit = limit_black
         result = engine.play(board, limit)
         if result.move is None:
             break
@@ -90,6 +97,7 @@ def evaluate(
     stockfish_path: str,
     games: int,
     time_per_move: float,
+    time_per_move_test: Optional[float],
     max_moves: int,
     threads: int,
     hash_mb: int,
@@ -142,12 +150,15 @@ def evaluate(
         draws = 0
         losses = 0
 
+        time_test = time_per_move_test if time_per_move_test is not None else time_per_move
+        time_base = time_per_move
+
         for game_idx in range(games):
             test_is_white = (game_idx % 2 == 0)
             if test_is_white:
-                result = _play_game(engine_test, engine_base, time_per_move, max_moves)
+                result = _play_game(engine_test, engine_base, time_test, time_base, max_moves)
             else:
-                result = _play_game(engine_base, engine_test, time_per_move, max_moves)
+                result = _play_game(engine_base, engine_test, time_base, time_test, max_moves)
 
             if result == "1-0":
                 if test_is_white:
@@ -239,7 +250,8 @@ def main() -> None:
     parser.add_argument("--nnue", required=True, help="Path to .nnue file")
     parser.add_argument("--stockfish", required=True, help="Path to stockfish binary")
     parser.add_argument("--games", type=int, default=8, help="Number of games")
-    parser.add_argument("--time-per-move", type=float, default=0.05, help="Seconds per move")
+    parser.add_argument("--time-per-move", type=float, default=0.05, help="Seconds per move (base engine)")
+    parser.add_argument("--time-per-move-test", type=float, default=None, help="Seconds per move for test engine (defaults to --time-per-move)")
     parser.add_argument("--max-moves", type=int, default=200, help="Max moves per game")
     parser.add_argument("--threads", type=int, default=1, help="Stockfish threads")
     parser.add_argument("--hash-mb", type=int, default=128, help="Stockfish hash size (MB)")
@@ -287,12 +299,17 @@ def main() -> None:
         print(f"Base Elo: {args.stockfish_base_elo}")
     if args.stockfish_base_skill is not None:
         print(f"Base Skill: {args.stockfish_base_skill}")
+    if args.time_per_move_test is not None:
+        print(f"Time per move - Test: {args.time_per_move_test}s, Base: {args.time_per_move}s")
+    else:
+        print(f"Time per move: {args.time_per_move}s")
 
     metrics = evaluate(
         nnue_path=args.nnue,
         stockfish_path=args.stockfish,
         games=args.games,
         time_per_move=args.time_per_move,
+        time_per_move_test=args.time_per_move_test,
         max_moves=args.max_moves,
         threads=args.threads,
         hash_mb=args.hash_mb,
