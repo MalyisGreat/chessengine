@@ -25,6 +25,23 @@ def _configure_engine(engine: chess.engine.SimpleEngine, threads: int, hash_mb: 
         engine.configure(options)
 
 
+def _configure_strength(
+    engine: chess.engine.SimpleEngine,
+    base_elo: Optional[int],
+    base_skill: Optional[int],
+) -> None:
+    options = {}
+    if base_elo is not None:
+        if "UCI_LimitStrength" in engine.options:
+            options["UCI_LimitStrength"] = True
+        if "UCI_Elo" in engine.options:
+            options["UCI_Elo"] = base_elo
+    if base_skill is not None and "Skill Level" in engine.options:
+        options["Skill Level"] = base_skill
+    if options:
+        engine.configure(options)
+
+
 def _play_game(
     engine_white: chess.engine.SimpleEngine,
     engine_black: chess.engine.SimpleEngine,
@@ -52,8 +69,11 @@ def _configure_base_engine(
     threads: int,
     hash_mb: int,
     force_classical: bool,
+    base_elo: Optional[int],
+    base_skill: Optional[int],
 ) -> None:
     _configure_engine(engine, threads, hash_mb)
+    _configure_strength(engine, base_elo, base_skill)
     if base_nnue:
         if "EvalFile" not in engine.options:
             raise RuntimeError("Stockfish does not support EvalFile option.")
@@ -78,6 +98,8 @@ def evaluate(
     base_nnue: Optional[str],
     force_classical: bool,
     debug_dir: Optional[str],
+    base_elo: Optional[int],
+    base_skill: Optional[int],
 ) -> Optional[dict]:
     nnue_path = os.path.abspath(nnue_path)
     stockfish_path = os.path.abspath(stockfish_path)
@@ -89,7 +111,15 @@ def evaluate(
     engine_test = chess.engine.SimpleEngine.popen_uci(stockfish_path, cwd=stockfish_cwd)
 
     try:
-        _configure_base_engine(engine_base, base_nnue, threads, hash_mb, force_classical)
+        _configure_base_engine(
+            engine_base,
+            base_nnue,
+            threads,
+            hash_mb,
+            force_classical,
+            base_elo,
+            base_skill,
+        )
         _configure_engine(engine_test, threads, hash_mb)
 
         if debug_dir and "Debug Log File" in engine_base.options:
@@ -136,6 +166,10 @@ def evaluate(
         win_rate = wins / max(games, 1)
         elo = _elo_from_score(score)
 
+        estimated_elo = None
+        if base_elo is not None:
+            estimated_elo = base_elo + elo
+
         metrics = {
             "timestamp": datetime.utcnow().isoformat(),
             "epoch": epoch,
@@ -146,25 +180,40 @@ def evaluate(
             "score": score,
             "win_rate": win_rate,
             "elo": elo,
+            "base_elo": base_elo,
+            "estimated_elo": estimated_elo,
         }
 
         if csv_path:
             os.makedirs(os.path.dirname(csv_path), exist_ok=True)
             file_exists = os.path.exists(csv_path)
+            fieldnames = [
+                "timestamp",
+                "epoch",
+                "games",
+                "wins",
+                "draws",
+                "losses",
+                "score",
+                "win_rate",
+                "elo",
+                "base_elo",
+                "estimated_elo",
+            ]
+            if file_exists:
+                try:
+                    with open(csv_path, "r", newline="") as read_file:
+                        reader = csv.reader(read_file)
+                        existing = next(reader, None)
+                        if existing:
+                            fieldnames = existing
+                except Exception:
+                    pass
             with open(csv_path, "a", newline="") as f:
                 writer = csv.DictWriter(
                     f,
-                    fieldnames=[
-                        "timestamp",
-                        "epoch",
-                        "games",
-                        "wins",
-                        "draws",
-                        "losses",
-                        "score",
-                        "win_rate",
-                        "elo",
-                    ],
+                    fieldnames=fieldnames,
+                    extrasaction="ignore",
                 )
                 if not file_exists:
                     writer.writeheader()
@@ -206,6 +255,18 @@ def main() -> None:
         help="Optional baseline NNUE file for Stockfish base engine",
     )
     parser.add_argument(
+        "--stockfish-base-elo",
+        type=int,
+        default=None,
+        help="Approximate Elo for the base Stockfish engine (uses UCI_LimitStrength).",
+    )
+    parser.add_argument(
+        "--stockfish-base-skill",
+        type=int,
+        default=None,
+        help="Skill Level for the base Stockfish engine (0-20).",
+    )
+    parser.add_argument(
         "--debug-dir",
         type=str,
         default=None,
@@ -228,17 +289,22 @@ def main() -> None:
         base_nnue=args.stockfish_base_nnue,
         force_classical=args.stockfish_classical_base,
         debug_dir=args.debug_dir,
+        base_elo=args.stockfish_base_elo,
+        base_skill=args.stockfish_base_skill,
     )
 
     if metrics is None:
         return
 
     print("Eval results:")
-    print(
+    line = (
         f"  W/D/L: {metrics['wins']}/{metrics['draws']}/{metrics['losses']}"
         f" | Score: {metrics['score']:.3f}"
         f" | Elo: {metrics['elo']:.1f}"
     )
+    if metrics.get("estimated_elo") is not None:
+        line += f" | Est Elo: {metrics['estimated_elo']:.1f}"
+    print(line)
 
 
 if __name__ == "__main__":

@@ -32,6 +32,20 @@ python speed_demon/runpod_train.py --skip-download --skip-install
 python speed_demon/runpod_train.py --stockfish-compat
 python speed_demon/runpod_train.py --skip-eval
 python speed_demon/runpod_train.py --stockfish-classical-base
+python speed_demon/runpod_train.py --stockfish-base-elo 1600 --eval-games 12
+python speed_demon/runpod_train.py --data-max-gb 2 --positions 2000000 --positions-per-epoch 500000
+```
+
+Local training tip (smaller dataset so it fits on a desktop):
+
+```bash
+python speed_demon/runpod_train.py --stockfish-compat --data-max-gb 2 --positions 2000000 --positions-per-epoch 500000 --batch-size 8192 --threads 4 --num-workers 2
+```
+
+Estimate Elo quickly (ladder vs limited Stockfish):
+
+```bash
+python speed_demon/estimate_elo.py --nnue ./outputs/speed_demon/nnue/nn-epoch4.nnue --stockfish /path/to/stockfish --levels 1200,1600,2000,2400 --games 8
 ```
 
 Legacy CNN training pipeline is still available below.

@@ -238,20 +238,21 @@ def find_baseline_nnue(stockfish_path: str) -> Optional[str]:
     return str(candidates[0])
 
 
-def download_dataset(output_path: Path, url: str, skip: bool) -> None:
+def download_dataset(output_path: Path, url: str, skip: bool, max_gb: Optional[float]) -> None:
     if skip:
         return
     download_script = ROOT / "speed_demon" / "download_binpack.py"
-    run(
-        [
-            sys.executable,
-            str(download_script),
-            "--url",
-            url,
-            "--output",
-            str(output_path),
-        ]
-    )
+    cmd = [
+        sys.executable,
+        str(download_script),
+        "--url",
+        url,
+        "--output",
+        str(output_path),
+    ]
+    if max_gb is not None:
+        cmd += ["--max-gb", str(max_gb)]
+    run(cmd)
 
 
 def _parse_epoch(path: Path) -> Optional[int]:
@@ -271,6 +272,8 @@ def eval_watcher(
     stockfish_path: str,
     base_nnue: Optional[str],
     base_classical: bool,
+    base_elo: Optional[int],
+    base_skill: Optional[int],
     eval_games: int,
     eval_time_per_move: float,
     eval_max_moves: int,
@@ -349,6 +352,10 @@ def eval_watcher(
                 cmd += ["--stockfish-base-nnue", base_nnue]
             if base_classical:
                 cmd += ["--stockfish-classical-base"]
+            if base_elo is not None:
+                cmd += ["--stockfish-base-elo", str(base_elo)]
+            if base_skill is not None:
+                cmd += ["--stockfish-base-skill", str(base_skill)]
             result = subprocess.run(cmd)
             if result.returncode != 0:
                 print(f"Eval command failed (code {result.returncode}). Continuing.")
@@ -356,7 +363,7 @@ def eval_watcher(
         if (output_dir / "training_finished").exists():
             return
 
-    time.sleep(15)
+        time.sleep(15)
 
 
 def _latest_checkpoint(output_dir: Path) -> Optional[Path]:
@@ -392,6 +399,8 @@ def _run_final_eval(
     stockfish_path: str,
     base_nnue: Optional[str],
     base_classical: bool,
+    base_elo: Optional[int],
+    base_skill: Optional[int],
     eval_games: int,
     eval_time_per_move: float,
     eval_max_moves: int,
@@ -465,6 +474,10 @@ def _run_final_eval(
         cmd += ["--stockfish-base-nnue", base_nnue]
     if base_classical:
         cmd += ["--stockfish-classical-base"]
+    if base_elo is not None:
+        cmd += ["--stockfish-base-elo", str(base_elo)]
+    if base_skill is not None:
+        cmd += ["--stockfish-base-skill", str(base_skill)]
     result = subprocess.run(cmd)
     if result.returncode != 0:
         print(f"Final eval failed (code {result.returncode}).")
@@ -482,6 +495,12 @@ def main() -> None:
         "--data-path",
         type=str,
         default=str(ROOT / "data" / "binpack" / "training_data.binpack"),
+    )
+    parser.add_argument(
+        "--data-max-gb",
+        type=float,
+        default=None,
+        help="Download only the first N GB of the binpack dataset (chunk-aligned).",
     )
     parser.add_argument("--positions", type=int, default=20_000_000)
     parser.add_argument("--positions-per-epoch", type=int, default=5_000_000)
@@ -509,6 +528,18 @@ def main() -> None:
     )
     parser.add_argument("--stockfish-path", type=str, default=None)
     parser.add_argument("--stockfish-base-nnue", type=str, default=None)
+    parser.add_argument(
+        "--stockfish-base-elo",
+        type=int,
+        default=None,
+        help="Approximate Elo for the base Stockfish engine (uses UCI_LimitStrength).",
+    )
+    parser.add_argument(
+        "--stockfish-base-skill",
+        type=int,
+        default=None,
+        help="Skill Level for the base Stockfish engine (0-20).",
+    )
     parser.add_argument(
         "--stockfish-classical-base",
         action="store_true",
@@ -562,7 +593,7 @@ def main() -> None:
     ensure_python_packages(repo_path, args.skip_install)
 
     data_path = Path(args.data_path)
-    download_dataset(data_path, args.data_url, args.skip_download)
+    download_dataset(data_path, args.data_url, args.skip_download, args.data_max_gb)
     ensure_data_loader(repo_path, args.skip_compile)
 
     stockfish_path = ensure_stockfish(args.stockfish_path)
@@ -631,6 +662,8 @@ def main() -> None:
                 stockfish_path,
                 base_nnue,
                 args.stockfish_classical_base,
+                args.stockfish_base_elo,
+                args.stockfish_base_skill,
                 args.eval_games,
                 args.eval_time_per_move,
                 args.eval_max_moves,
@@ -659,6 +692,8 @@ def main() -> None:
             stockfish_path=stockfish_path,
             base_nnue=base_nnue,
             base_classical=args.stockfish_classical_base,
+            base_elo=args.stockfish_base_elo,
+            base_skill=args.stockfish_base_skill,
             eval_games=args.eval_games,
             eval_time_per_move=args.eval_time_per_move,
             eval_max_moves=args.eval_max_moves,
