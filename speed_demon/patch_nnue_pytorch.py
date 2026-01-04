@@ -63,12 +63,55 @@ def _patch_halfkp_psqt(text: str) -> str:
     return text
 
 
+def _patch_csv_logger(text: str) -> str:
+    if "CSVLogger" in text and "csv_logger" in text:
+        return text
+    text = text.replace(
+        "tb_logger = pl_loggers.TensorBoardLogger(logdir)",
+        "tb_logger = pl_loggers.TensorBoardLogger(logdir)\n"
+        "    csv_logger = pl_loggers.CSVLogger(logdir)",
+    )
+    text = text.replace(
+        "logger=tb_logger,",
+        "logger=[tb_logger, csv_logger],",
+    )
+    return text
+
+
+def _patch_matmul_precision(text: str) -> str:
+    if "TORCH_MATMUL_PRECISION" in text:
+        return text
+    marker = "import torch"
+    lines = text.splitlines()
+    out_lines = []
+    inserted = False
+    for line in lines:
+        out_lines.append(line)
+        if not inserted and line.strip() == marker:
+            out_lines.append("")
+            out_lines.append("if os.environ.get(\"TORCH_MATMUL_PRECISION\"):")
+            out_lines.append("    try:")
+            out_lines.append(
+                "        torch.set_float32_matmul_precision(os.environ[\"TORCH_MATMUL_PRECISION\"])"
+            )
+            out_lines.append("    except Exception:")
+            out_lines.append("        pass")
+            out_lines.append("if os.environ.get(\"TORCH_TF32\") == \"1\":")
+            out_lines.append("    torch.backends.cuda.matmul.allow_tf32 = True")
+            out_lines.append("    torch.backends.cudnn.allow_tf32 = True")
+            inserted = True
+    return "\n".join(out_lines)
+
+
 def patch_file(path: Path) -> bool:
     original = path.read_text(encoding="utf-8")
     updated = original
     if path.name in ("train.py", "serialize.py"):
         updated = _insert_after_l1_arg(updated)
         updated = _patch_model_config_usage(updated)
+    if path.name == "train.py":
+        updated = _patch_csv_logger(updated)
+        updated = _patch_matmul_precision(updated)
     if path.name == "_native.py":
         updated = _patch_native_aliases(updated)
     if path.name == "halfkp.py":

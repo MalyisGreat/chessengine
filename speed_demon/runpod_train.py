@@ -1,5 +1,6 @@
 import argparse
 import csv
+import json
 import os
 import platform
 import re
@@ -19,7 +20,9 @@ DEFAULT_DATA_URL = (
     "https://huggingface.co/datasets/linrock/test80-2024/resolve/main/"
     "test80-2024-01-jan-2tb7p.min-v2.v6.binpack.zst"
 )
-DEFAULT_DATA_URLS_FILE = ROOT / "speed_demon" / "data_urls" / "test80_2024_minv2_v6.txt"
+DEFAULT_DATA_URLS_FILE = (
+    ROOT / "speed_demon" / "data_urls" / "test80_2023_2024_minv2_v6.txt"
+)
 STOCKFISH_NET_URL = "https://tests.stockfishchess.org/api/nn/{name}"
 STOCKFISH_COMPAT = {"features": "HalfKAv2_hm", "l1": 2560, "l2": 15, "l3": 32}
 
@@ -361,6 +364,8 @@ def eval_watcher(
     seen = set()
     nnue_dir = output_dir / "nnue"
     eval_csv = output_dir / "eval" / "eval.csv"
+    eval_json = output_dir / "eval" / "eval.jsonl"
+    eval_json = output_dir / "eval" / "eval.jsonl"
     eval_script = ROOT / "speed_demon" / "eval_vs_stockfish.py"
 
     while not stop_event.is_set():
@@ -404,6 +409,7 @@ def eval_watcher(
                         nnue_path=nnue_path,
                         stockfish_path=stockfish_path,
                         eval_csv=eval_csv,
+                        eval_json=eval_json,
                         epoch_label=epoch + 1,
                         eval_games=ladder_games,
                         eval_time_per_move=eval_time_per_move,
@@ -426,6 +432,7 @@ def eval_watcher(
                     nnue_path=nnue_path,
                     stockfish_path=stockfish_path,
                     eval_csv=eval_csv,
+                    eval_json=eval_json,
                     epoch_label=epoch + 1,
                     eval_games=eval_games,
                     eval_time_per_move=eval_time_per_move,
@@ -480,6 +487,70 @@ def _read_last_metrics(csv_path: Path) -> Optional[dict]:
     return last_row
 
 
+def _latest_metrics_csv(output_dir: Path) -> Optional[Path]:
+    csvs = list(output_dir.rglob("metrics.csv"))
+    if not csvs:
+        return None
+    csvs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return csvs[0]
+
+
+def _parse_float(value: Optional[str]) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def _write_loss_history(output_dir: Path) -> None:
+    metrics_csv = _latest_metrics_csv(output_dir)
+    if not metrics_csv:
+        print("No metrics.csv found for loss history.")
+        return
+
+    by_epoch: dict[int, dict] = {}
+    try:
+        with metrics_csv.open("r", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if "epoch" not in row or not row["epoch"]:
+                    continue
+                try:
+                    epoch = int(float(row["epoch"]))
+                except ValueError:
+                    continue
+                entry = by_epoch.get(epoch, {"epoch": epoch})
+                step = _parse_float(row.get("step"))
+                if step is not None:
+                    entry["step"] = int(step)
+                train_loss = _parse_float(
+                    row.get("train_loss_epoch") or row.get("train_loss")
+                )
+                if train_loss is not None:
+                    entry["train_loss"] = train_loss
+                val_loss = _parse_float(row.get("val_loss_epoch") or row.get("val_loss"))
+                if val_loss is not None:
+                    entry["val_loss"] = val_loss
+                by_epoch[epoch] = entry
+    except Exception:
+        print(f"Failed to read metrics from {metrics_csv}")
+        return
+
+    if not by_epoch:
+        print("No epoch loss metrics found in metrics.csv.")
+        return
+
+    history = [by_epoch[key] for key in sorted(by_epoch)]
+    loss_dir = output_dir / "loss"
+    loss_dir.mkdir(parents=True, exist_ok=True)
+    output_path = loss_dir / "loss_history.json"
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(history, f, indent=2)
+    print(f"Loss history saved to {output_path}")
+
+
 def _parse_win_rate(metrics: dict) -> Optional[float]:
     try:
         if "win_rate" in metrics and metrics["win_rate"] not in (None, ""):
@@ -498,6 +569,7 @@ def _run_eval_once(
     nnue_path: Path,
     stockfish_path: str,
     eval_csv: Path,
+    eval_json: Path,
     epoch_label: int,
     eval_games: int,
     eval_time_per_move: float,
@@ -523,6 +595,8 @@ def _run_eval_once(
         str(eval_max_moves),
         "--csv",
         str(eval_csv),
+        "--json",
+        str(eval_json),
         "--epoch",
         str(epoch_label),
         "--debug-dir",
@@ -611,6 +685,7 @@ def _run_final_eval(
                 nnue_path=nnue_path,
                 stockfish_path=stockfish_path,
                 eval_csv=eval_csv,
+                eval_json=eval_json,
                 epoch_label=epoch_label,
                 eval_games=ladder_games,
                 eval_time_per_move=eval_time_per_move,
@@ -644,6 +719,8 @@ def _run_final_eval(
                 str(eval_max_moves),
                 "--csv",
                 str(eval_csv),
+                "--json",
+                str(eval_json),
                 "--epoch",
                 str(epoch_label),
                 "--debug-dir",
@@ -700,6 +777,18 @@ def main() -> None:
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--gpus", type=str, default=None)
+    parser.add_argument(
+        "--matmul-precision",
+        type=str,
+        choices=["high", "medium"],
+        default=None,
+        help="Set TORCH_MATMUL_PRECISION for training (enables Tensor Cores).",
+    )
+    parser.add_argument(
+        "--enable-tf32",
+        action="store_true",
+        help="Enable TF32 matmul in torch for training.",
+    )
     parser.add_argument("--validation-size", type=int, default=100_000)
     parser.add_argument("--eval-games", type=int, default=8)
     parser.add_argument("--eval-time-per-move", type=float, default=0.05)
@@ -920,7 +1009,15 @@ def main() -> None:
         )
         watcher_thread.start()
 
-    run(train_cmd, cwd=repo_path)
+    train_env = None
+    if args.matmul_precision or args.enable_tf32:
+        train_env = os.environ.copy()
+        if args.matmul_precision:
+            train_env["TORCH_MATMUL_PRECISION"] = args.matmul_precision
+        if args.enable_tf32:
+            train_env["TORCH_TF32"] = "1"
+
+    run(train_cmd, cwd=repo_path, env=train_env)
     stop_event.set()
     if watcher_thread:
         watcher_thread.join()
@@ -950,6 +1047,8 @@ def main() -> None:
             ladder_win_rate=args.eval_ladder_win_rate,
             ladder_max_elo=args.eval_ladder_max_elo,
         )
+
+    _write_loss_history(output_dir)
 
     print("Training complete.")
 

@@ -1,8 +1,9 @@
 import argparse
 import csv
+import json
 import math
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import chess
@@ -102,6 +103,7 @@ def evaluate(
     threads: int,
     hash_mb: int,
     csv_path: Optional[str],
+    json_path: Optional[str],
     epoch: Optional[int],
     base_nnue: Optional[str],
     force_classical: bool,
@@ -182,8 +184,14 @@ def evaluate(
             estimated_elo = base_elo + elo
 
         metrics = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "epoch": epoch,
+            "nnue": nnue_path,
+            "stockfish": stockfish_path,
+            "base_nnue": base_nnue,
+            "force_classical": force_classical,
+            "base_elo": base_elo,
+            "base_skill": base_skill,
             "games": games,
             "wins": wins,
             "draws": draws,
@@ -191,8 +199,12 @@ def evaluate(
             "score": score,
             "win_rate": win_rate,
             "elo": elo,
-            "base_elo": base_elo,
             "estimated_elo": estimated_elo,
+            "time_per_move": time_per_move,
+            "time_per_move_test": time_per_move_test,
+            "max_moves": max_moves,
+            "threads": threads,
+            "hash_mb": hash_mb,
         }
 
         if csv_path:
@@ -229,6 +241,11 @@ def evaluate(
                 if not file_exists:
                     writer.writeheader()
                 writer.writerow(metrics)
+
+        if json_path:
+            os.makedirs(os.path.dirname(json_path), exist_ok=True)
+            with open(json_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(metrics) + "\n")
 
         return metrics
     except Exception as exc:
@@ -285,6 +302,7 @@ def main() -> None:
         help="Directory to write Stockfish debug logs (base.log/test.log).",
     )
     parser.add_argument("--csv", type=str, default=None, help="CSV log path")
+    parser.add_argument("--json", type=str, default=None, help="JSONL log path")
     parser.add_argument("--epoch", type=int, default=None, help="Epoch number")
     args = parser.parse_args()
 
@@ -314,6 +332,7 @@ def main() -> None:
         threads=args.threads,
         hash_mb=args.hash_mb,
         csv_path=args.csv,
+        json_path=args.json,
         epoch=args.epoch,
         base_nnue=args.stockfish_base_nnue,
         force_classical=args.stockfish_classical_base,
