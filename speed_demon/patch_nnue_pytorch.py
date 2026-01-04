@@ -46,6 +46,23 @@ def _patch_native_aliases(text: str) -> str:
     return "\n".join(out_lines)
 
 
+def _patch_halfkp_psqt(text: str) -> str:
+    if "Not supported yet. See HalfKA" not in text:
+        return text
+
+    replacement = (
+        "    def get_initial_psqt_features(self) -> list[int]:\n"
+        "        return [0] * self.num_features\n"
+    )
+
+    text = text.replace(
+        "    def get_initial_psqt_features(self):\n"
+        "        raise Exception(\"Not supported yet. See HalfKA\")\n",
+        replacement,
+    )
+    return text
+
+
 def patch_file(path: Path) -> bool:
     original = path.read_text(encoding="utf-8")
     updated = original
@@ -54,6 +71,8 @@ def patch_file(path: Path) -> bool:
         updated = _patch_model_config_usage(updated)
     if path.name == "_native.py":
         updated = _patch_native_aliases(updated)
+    if path.name == "halfkp.py":
+        updated = _patch_halfkp_psqt(updated)
     if updated == original:
         return False
     path.write_text(updated, encoding="utf-8")
@@ -74,9 +93,10 @@ def main() -> None:
     train_path = repo / "train.py"
     serialize_path = repo / "serialize.py"
     native_path = repo / "data_loader" / "_native.py"
+    halfkp_path = repo / "model" / "features" / "halfkp.py"
 
     patched_any = False
-    for target in (train_path, serialize_path, native_path):
+    for target in (train_path, serialize_path, native_path, halfkp_path):
         if not target.exists():
             raise FileNotFoundError(f"Missing {target}")
         if patch_file(target):
