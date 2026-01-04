@@ -21,7 +21,7 @@ DEFAULT_DATA_URL = (
     "test80-2024-01-jan-2tb7p.min-v2.v6.binpack.zst"
 )
 DEFAULT_DATA_URLS_FILE = (
-    ROOT / "speed_demon" / "data_urls" / "test80_2023_2024_minv2_v6.txt"
+    ROOT / "speed_demon" / "data_urls" / "test80_diverse_best.txt"
 )
 STOCKFISH_NET_URL = "https://tests.stockfishchess.org/api/nn/{name}"
 STOCKFISH_COMPAT = {"features": "HalfKAv2_hm", "l1": 2560, "l2": 15, "l3": 32}
@@ -774,6 +774,18 @@ def main() -> None:
     parser.add_argument("--l2", type=int, default=32)
     parser.add_argument("--l3", type=int, default=32)
     parser.add_argument("--lambda", dest="lambda_", type=float, default=1.0)
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=None,
+        help="Initial learning rate override for nnue-pytorch.",
+    )
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=None,
+        help="Learning rate decay per epoch override for nnue-pytorch.",
+    )
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--gpus", type=str, default=None)
@@ -969,6 +981,10 @@ def main() -> None:
         "--validation-size",
         str(args.validation_size),
     ]
+    if args.lr is not None:
+        train_cmd += ["--lr", str(args.lr)]
+    if args.gamma is not None:
+        train_cmd += ["--gamma", str(args.gamma)]
     if args.gpus:
         train_cmd += ["--gpus", args.gpus]
 
