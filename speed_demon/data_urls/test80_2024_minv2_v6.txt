@@ -1,0 +1,6 @@
+https://huggingface.co/datasets/linrock/test80-2024/resolve/main/test80-2024-01-jan-2tb7p.min-v2.v6.binpack.zst
+https://huggingface.co/datasets/linrock/test80-2024/resolve/main/test80-2024-02-feb-2tb7p.min-v2.v6.binpack.zst
+https://huggingface.co/datasets/linrock/test80-2024/resolve/main/test80-2024-03-mar-2tb7p.min-v2.v6.binpack.zst
+https://huggingface.co/datasets/linrock/test80-2024/resolve/main/test80-2024-04-apr-2tb7p.min-v2.v6.binpack.zst
+https://huggingface.co/datasets/linrock/test80-2024/resolve/main/test80-2024-05-may-2tb7p.min-v2.v6.binpack.zst
+https://huggingface.co/datasets/linrock/test80-2024/resolve/main/test80-2024-06-jun-2tb7p.min-v2.v6.binpack.zst

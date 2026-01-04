@@ -19,6 +19,7 @@ DEFAULT_DATA_URL = (
     "https://huggingface.co/datasets/linrock/test80-2024/resolve/main/"
     "test80-2024-01-jan-2tb7p.min-v2.v6.binpack.zst"
 )
+DEFAULT_DATA_URLS_FILE = ROOT / "speed_demon" / "data_urls" / "test80_2024_minv2_v6.txt"
 STOCKFISH_NET_URL = "https://tests.stockfishchess.org/api/nn/{name}"
 STOCKFISH_COMPAT = {"features": "HalfKAv2_hm", "l1": 2560, "l2": 15, "l3": 32}
 
@@ -238,18 +239,29 @@ def find_baseline_nnue(stockfish_path: str) -> Optional[str]:
     return str(candidates[0])
 
 
-def download_dataset(output_path: Path, url: str, skip: bool, max_gb: Optional[float]) -> None:
+def download_dataset(
+    output_path: Path,
+    urls: Optional[list[str]],
+    urls_file: Optional[str],
+    skip: bool,
+    max_gb: Optional[float],
+) -> None:
     if skip:
         return
     download_script = ROOT / "speed_demon" / "download_binpack.py"
     cmd = [
         sys.executable,
         str(download_script),
-        "--url",
-        url,
         "--output",
         str(output_path),
     ]
+    if urls:
+        for url in urls:
+            cmd += ["--url", url]
+    if urls_file:
+        cmd += ["--urls-file", urls_file]
+    if not urls and not urls_file:
+        cmd += ["--url", DEFAULT_DATA_URL]
     if max_gb is not None:
         cmd += ["--max-gb", str(max_gb)]
     run(cmd)
@@ -653,7 +665,18 @@ def main() -> None:
     parser.add_argument("--skip-download", action="store_true", help="Skip dataset download")
     parser.add_argument("--skip-compile", action="store_true", help="Skip data loader build")
     parser.add_argument("--skip-eval", action="store_true", help="Skip eval watcher")
-    parser.add_argument("--data-url", type=str, default=DEFAULT_DATA_URL)
+    parser.add_argument(
+        "--data-url",
+        action="append",
+        default=None,
+        help="Dataset URL (repeatable or comma-separated).",
+    )
+    parser.add_argument(
+        "--data-urls-file",
+        type=str,
+        default=None,
+        help="Path to a newline-delimited list of dataset URLs.",
+    )
     parser.add_argument(
         "--data-path",
         type=str,
@@ -738,6 +761,10 @@ def main() -> None:
     parser.add_argument("--repo-path", type=str, default=str(ROOT / "third_party" / "nnue-pytorch"))
     args = parser.parse_args()
 
+    if args.data_url is None and args.data_urls_file is None:
+        if DEFAULT_DATA_URLS_FILE.exists():
+            args.data_urls_file = str(DEFAULT_DATA_URLS_FILE)
+
     if args.stockfish_compat:
         args.features = STOCKFISH_COMPAT["features"]
         args.l1 = STOCKFISH_COMPAT["l1"]
@@ -797,7 +824,13 @@ def main() -> None:
     ensure_python_packages(repo_path, args.skip_install)
 
     data_path = Path(args.data_path)
-    download_dataset(data_path, args.data_url, args.skip_download, args.data_max_gb)
+    download_dataset(
+        data_path,
+        args.data_url,
+        args.data_urls_file,
+        args.skip_download,
+        args.data_max_gb,
+    )
     ensure_data_loader(repo_path, args.skip_compile)
 
     stockfish_path = ensure_stockfish(args.stockfish_path)
