@@ -6,15 +6,23 @@ from typing import Optional
 
 from eval_vs_stockfish import evaluate
 
+MIN_BASE_ELO = 1400
+
 
 def _parse_levels(levels_arg: Optional[str], min_elo: int, max_elo: int, step: int) -> list[int]:
     if levels_arg:
         parts = [p.strip() for p in levels_arg.split(",") if p.strip()]
-        return [int(p) for p in parts]
+        levels = [int(p) for p in parts]
+        for level in levels:
+            if level < MIN_BASE_ELO:
+                raise ValueError(f"Base Elo must be >= {MIN_BASE_ELO}. Got {level}.")
+        return levels
     if step <= 0:
         raise ValueError("step must be positive")
     if min_elo > max_elo:
         raise ValueError("min-elo must be <= max-elo")
+    if min_elo < MIN_BASE_ELO:
+        raise ValueError(f"min-elo must be >= {MIN_BASE_ELO}.")
     return list(range(min_elo, max_elo + 1, step))
 
 
@@ -23,7 +31,12 @@ def main() -> None:
     parser.add_argument("--nnue", required=True, help="Path to .nnue file")
     parser.add_argument("--stockfish", required=True, help="Path to Stockfish binary")
     parser.add_argument("--levels", type=str, default=None, help="Comma-separated ELO levels")
-    parser.add_argument("--min-elo", type=int, default=1200, help="Minimum ELO level")
+    parser.add_argument(
+        "--min-elo",
+        type=int,
+        default=MIN_BASE_ELO,
+        help=f"Minimum ELO level (>= {MIN_BASE_ELO})",
+    )
     parser.add_argument("--max-elo", type=int, default=2600, help="Maximum ELO level")
     parser.add_argument("--step", type=int, default=200, help="ELO step size")
     parser.add_argument("--games", type=int, default=8, help="Games per level")
