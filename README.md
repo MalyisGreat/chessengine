@@ -56,6 +56,13 @@ python speed_demon/web/engine_server.py --stockfish /path/to/stockfish --nnue /p
 # Open http://127.0.0.1:8008 in your browser
 ```
 
+Play with a pygame board (desktop GUI):
+
+```bash
+pip install pygame
+python speed_demon/pygame_play.py --stockfish /path/to/stockfish --nnue /path/to/nnue
+```
+
 Legacy CNN training pipeline is still available below.
 
 A superhuman chess engine trained using supervised learning on 316M Stockfish-evaluated positions. Achieves ~3000 ELO in under 1 hour on 5x H100 GPUs.
