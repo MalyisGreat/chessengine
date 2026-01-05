@@ -43,13 +43,15 @@ Run: 2026-01-05 (Stockfish 16.1, base Elos 2600–3190, 5 games/point, threads 4
 
 Data: `docs/scaling_run_20260105_041456.csv`
 
-## Loss Curve (Epoch 16 Run)
+## Loss Curve (Recent Run)
 
-Train and validation snapshots from the epoch 16 run.
+![Loss Curve (Recent Run)](loss_curve_latest.svg)
 
-![Loss Curve (Epoch 16 Run)](loss_curve_epoch16.svg)
+Data: `docs/loss_curve_latest.csv`
 
-Data: `docs/loss_curve_epoch16.csv`
+Notes:
+- Dashed line marks the best validation loss.
+- Red shading shows the post-best region (overfit zone) for this architecture.
 
 ## Notes
 
