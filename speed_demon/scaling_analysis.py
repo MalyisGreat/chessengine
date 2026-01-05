@@ -138,6 +138,27 @@ def _format_table(rows: List[Tuple[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def _print_progress(
+    completed: int,
+    total: int,
+    games_per_point: int,
+    successes: int,
+    failures: int,
+    start_time: float,
+) -> None:
+    elapsed = max(time.time() - start_time, 1e-6)
+    total_games = total * games_per_point
+    completed_games = completed * games_per_point
+    rate = completed_games / elapsed
+    eta = (total_games - completed_games) / rate if rate > 0 else float("inf")
+    print(
+        f"Progress: {completed}/{total} points | "
+        f"{completed_games}/{total_games} games | "
+        f"ok={successes} fail={failures} | "
+        f"{rate:.2f} games/s | ETA {eta/60:.1f} min"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Search scaling law runner for NNUE.")
     parser.add_argument("--nnue", required=True, help="Path to test NNUE")
@@ -201,6 +222,12 @@ def main() -> None:
         type=str,
         default=None,
         help="Optional debug log directory",
+    )
+    parser.add_argument(
+        "--progress-interval",
+        type=float,
+        default=5.0,
+        help="Seconds between progress updates",
     )
     args = parser.parse_args()
 
@@ -282,15 +309,43 @@ def main() -> None:
     start = time.time()
     results: List[Dict] = []
     failures = 0
+    successes = 0
+    completed = 0
+    last_print = 0.0
 
     if args.workers <= 1:
         for task in tasks:
             metrics = _run_eval(task)
             if metrics is None:
                 failures += 1
+                completed += 1
+                now = time.time()
+                if now - last_print >= args.progress_interval or completed == len(tasks):
+                    _print_progress(
+                        completed,
+                        len(tasks),
+                        args.games,
+                        successes,
+                        failures,
+                        start,
+                    )
+                    last_print = now
                 continue
             results.append(metrics)
             _write_jsonl(raw_path, [metrics])
+            successes += 1
+            completed += 1
+            now = time.time()
+            if now - last_print >= args.progress_interval or completed == len(tasks):
+                _print_progress(
+                    completed,
+                    len(tasks),
+                    args.games,
+                    successes,
+                    failures,
+                    start,
+                )
+                last_print = now
     else:
         with ProcessPoolExecutor(max_workers=args.workers) as executor:
             futures = [executor.submit(_run_eval, task) for task in tasks]
@@ -298,9 +353,34 @@ def main() -> None:
                 metrics = future.result()
                 if metrics is None:
                     failures += 1
+                    completed += 1
+                    now = time.time()
+                    if now - last_print >= args.progress_interval or completed == len(tasks):
+                        _print_progress(
+                            completed,
+                            len(tasks),
+                            args.games,
+                            successes,
+                            failures,
+                            start,
+                        )
+                        last_print = now
                     continue
                 results.append(metrics)
                 _write_jsonl(raw_path, [metrics])
+                successes += 1
+                completed += 1
+                now = time.time()
+                if now - last_print >= args.progress_interval or completed == len(tasks):
+                    _print_progress(
+                        completed,
+                        len(tasks),
+                        args.games,
+                        successes,
+                        failures,
+                        start,
+                    )
+                    last_print = now
 
     elapsed = time.time() - start
     grouped = _summarize_by_time(results)
