@@ -110,6 +110,7 @@ def evaluate(
     debug_dir: Optional[str],
     base_elo: Optional[int],
     base_skill: Optional[int],
+    progress_callback: Optional[callable] = None,
 ) -> Optional[dict]:
     nnue_path = os.path.abspath(nnue_path)
     stockfish_path = os.path.abspath(stockfish_path)
@@ -174,6 +175,9 @@ def evaluate(
                     wins += 1
             else:
                 draws += 1
+
+            if progress_callback:
+                progress_callback(game_idx + 1, games, wins, draws, losses)
 
         score = (wins + 0.5 * draws) / max(games, 1)
         win_rate = wins / max(games, 1)

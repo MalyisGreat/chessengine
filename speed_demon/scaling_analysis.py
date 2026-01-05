@@ -1,15 +1,21 @@
 import argparse
 import json
 import math
+import multiprocessing
 import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
+
+# Shared counter for cross-process game tracking
+_games_completed = None
+_games_lock = None
 
 
 def _parse_floats(value: str) -> List[float]:
@@ -81,6 +87,19 @@ def _detect_uci_elo_range(stockfish_path: Path) -> Optional[Tuple[int, int]]:
     return None
 
 
+def _init_worker(counter, lock):
+    global _games_completed, _games_lock
+    _games_completed = counter
+    _games_lock = lock
+
+
+def _game_progress_callback(game_num, total_games, wins, draws, losses):
+    global _games_completed, _games_lock
+    if _games_completed is not None and _games_lock is not None:
+        with _games_lock:
+            _games_completed.value += 1
+
+
 def _run_eval(task: Dict) -> Optional[Dict]:
     import eval_vs_stockfish
 
@@ -101,6 +120,7 @@ def _run_eval(task: Dict) -> Optional[Dict]:
         debug_dir=task.get("debug_dir"),
         base_elo=task["base_elo"],
         base_skill=task.get("base_skill"),
+        progress_callback=_game_progress_callback,
     )
     if metrics is None:
         return None
@@ -139,24 +159,35 @@ def _format_table(rows: List[Tuple[str, str]]) -> str:
 
 
 def _print_progress(
-    completed: int,
-    total: int,
+    completed_points: int,
+    total_points: int,
     games_per_point: int,
     successes: int,
     failures: int,
     start_time: float,
+    games_completed: int = None,
 ) -> None:
     elapsed = max(time.time() - start_time, 1e-6)
-    total_games = total * games_per_point
-    completed_games = completed * games_per_point
-    rate = completed_games / elapsed
-    eta = (total_games - completed_games) / rate if rate > 0 else float("inf")
-    print(
-        f"Progress: {completed}/{total} points | "
-        f"{completed_games}/{total_games} games | "
-        f"ok={successes} fail={failures} | "
-        f"{rate:.2f} games/s | ETA {eta/60:.1f} min"
+    total_games = total_points * games_per_point
+    # Use actual games completed if available, otherwise estimate from points
+    if games_completed is not None:
+        completed_games = games_completed
+    else:
+        completed_games = completed_points * games_per_point
+    rate = completed_games / elapsed if elapsed > 0 else 0
+    remaining_games = total_games - completed_games
+    eta = remaining_games / rate if rate > 0 else float("inf")
+    # Progress bar
+    pct = completed_games / total_games if total_games > 0 else 0
+    bar_width = 30
+    filled = int(bar_width * pct)
+    bar = "█" * filled + "░" * (bar_width - filled)
+    sys.stdout.write(
+        f"\r[{bar}] {completed_games}/{total_games} games ({pct*100:.1f}%) | "
+        f"{completed_points}/{total_points} points | "
+        f"{rate:.2f} g/s | ETA {eta/60:.1f}m"
     )
+    sys.stdout.flush()
 
 
 def main() -> None:
@@ -305,6 +336,7 @@ def main() -> None:
     print(f"Scaling run {run_id}")
     print(f"Test points: {len(tasks)} | Games per point: {args.games} | Total games: {total_games}")
     print(f"Workers: {args.workers} | Threads per engine: {args.threads}")
+    print()  # Empty line before progress bar
 
     start = time.time()
     results: List[Dict] = []
@@ -313,7 +345,17 @@ def main() -> None:
     completed = 0
     last_print = 0.0
 
+    # Create shared counter for cross-process game tracking
+    manager = multiprocessing.Manager()
+    games_counter = manager.Value("i", 0)
+    games_lock = manager.Lock()
+
     if args.workers <= 1:
+        # Single worker mode - use local counter
+        global _games_completed, _games_lock
+        _games_completed = games_counter
+        _games_lock = games_lock
+
         for task in tasks:
             metrics = _run_eval(task)
             if metrics is None:
@@ -328,6 +370,7 @@ def main() -> None:
                         successes,
                         failures,
                         start,
+                        games_counter.value,
                     )
                     last_print = now
                 continue
@@ -344,32 +387,34 @@ def main() -> None:
                     successes,
                     failures,
                     start,
+                    games_counter.value,
                 )
                 last_print = now
     else:
-        with ProcessPoolExecutor(max_workers=args.workers) as executor:
+        with ProcessPoolExecutor(
+            max_workers=args.workers,
+            initializer=_init_worker,
+            initargs=(games_counter, games_lock),
+        ) as executor:
             futures = [executor.submit(_run_eval, task) for task in tasks]
-            for future in as_completed(futures):
-                metrics = future.result()
-                if metrics is None:
-                    failures += 1
-                    completed += 1
-                    now = time.time()
-                    if now - last_print >= args.progress_interval or completed == len(tasks):
-                        _print_progress(
-                            completed,
-                            len(tasks),
-                            args.games,
-                            successes,
-                            failures,
-                            start,
-                        )
-                        last_print = now
-                    continue
-                results.append(metrics)
-                _write_jsonl(raw_path, [metrics])
-                successes += 1
-                completed += 1
+
+            # Progress monitoring loop
+            while True:
+                # Check for completed futures
+                done_futures = [f for f in futures if f.done()]
+                for future in done_futures:
+                    if future in futures:
+                        futures.remove(future)
+                        metrics = future.result()
+                        if metrics is None:
+                            failures += 1
+                        else:
+                            results.append(metrics)
+                            _write_jsonl(raw_path, [metrics])
+                            successes += 1
+                        completed += 1
+
+                # Update progress
                 now = time.time()
                 if now - last_print >= args.progress_interval or completed == len(tasks):
                     _print_progress(
@@ -379,8 +424,16 @@ def main() -> None:
                         successes,
                         failures,
                         start,
+                        games_counter.value,
                     )
                     last_print = now
+
+                if completed >= len(tasks):
+                    break
+
+                time.sleep(0.5)  # Poll every 500ms
+
+    print()  # Newline after progress bar
 
     elapsed = time.time() - start
     grouped = _summarize_by_time(results)
