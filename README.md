@@ -35,7 +35,7 @@ For full, reproducible commands (100 GB 2023–2024 run and epoch‑16 stop), se
 Full results and plots live in `docs/RESULTS.md`.
 
 ![Search-Time Scaling (Epoch 16 NNUE)](docs/scaling_run_20260105_041456.svg)
-![Loss Curve (Recent Run)](docs/loss_curve_latest.svg)
+![Loss Curve (100GB Run, Best Epoch 16)](docs/loss_curve_latest.svg)
 
 ## Helpers
 

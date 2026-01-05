@@ -6,10 +6,16 @@ from typing import Iterable, List, Tuple, Optional, Dict
 
 def _load_series(
     path: str,
-) -> Tuple[List[Tuple[int, float]], List[Tuple[int, float]], List[Dict[str, Optional[float]]]]:
+) -> Tuple[
+    List[Tuple[int, float]],
+    List[Tuple[int, float]],
+    List[Dict[str, Optional[float]]],
+    Dict[int, int],
+]:
     train = []
     val = []
     val_meta = []
+    epoch_max_step = {}
     with open(path, "r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -22,6 +28,9 @@ def _load_series(
             epoch_value = None
             if row.get("epoch") not in (None, ""):
                 epoch_value = int(float(row["epoch"]))
+                prev = epoch_max_step.get(epoch_value)
+                if prev is None or step_value > prev:
+                    epoch_max_step[epoch_value] = step_value
             train_loss = row.get("train_loss") or ""
             val_loss = row.get("val_loss") or ""
             if train_loss.strip():
@@ -36,7 +45,7 @@ def _load_series(
                         "loss": val_value,
                     }
                 )
-    return train, val, val_meta
+    return train, val, val_meta, epoch_max_step
 
 
 def _format_step(value: float) -> str:
@@ -51,7 +60,9 @@ def _write_svg(
     train: Iterable[Tuple[int, float]],
     val: Iterable[Tuple[int, float]],
     val_meta: Iterable[Dict[str, Optional[float]]],
+    best_step: Optional[int],
     overfit_step: Optional[int],
+    best_label: Optional[str],
     out_path: str,
     title: str,
     x_label: str,
@@ -150,9 +161,8 @@ def _write_svg(
             f'<polyline fill="none" stroke="#f0b46e" stroke-width="2.2" points="{polyline(val)}"/>'
         )
 
-    if show_best_marker and val_meta:
+    if show_best_marker and val_meta and best_step is not None:
         best_point = min(val_meta, key=lambda p: p["loss"])
-        best_step = int(best_point["step"])
         best_loss = float(best_point["loss"])
         x_best = map_x(best_step)
         y_best = map_y(best_loss)
@@ -162,9 +172,7 @@ def _write_svg(
         lines.append(
             f'<circle cx="{x_best:.1f}" cy="{y_best:.1f}" r="4.5" fill="#ff7b7b" stroke="#0b0f14" stroke-width="1"/>'
         )
-        label = f"best val @ step {best_step}"
-        if best_point.get("epoch") is not None:
-            label = f"best val @ epoch {int(best_point['epoch'])}, step {best_step}"
+        label = best_label or f"best epoch @ step {best_step}"
         lines.append(
             f'<text x="{x_best+6:.1f}" y="{top+14}" fill="#ff9b9b" font-size="11" font-family="Arial">{label}</text>'
         )
@@ -197,20 +205,32 @@ def main() -> None:
     parser.add_argument("--width", type=int, default=960, help="SVG width")
     parser.add_argument("--height", type=int, default=540, help="SVG height")
     parser.add_argument("--overfit-step", type=int, help="Step at which overfitting begins (default: best val loss)")
+    parser.add_argument("--best-epoch", type=int, help="Epoch to mark as best (overrides best val loss).")
+    parser.add_argument("--overfit-epoch", type=int, help="Epoch to start overfit shading (overrides best val loss).")
     parser.add_argument("--no-overfit-shade", action="store_true", help="Disable overfit shading")
     parser.add_argument("--no-best-marker", action="store_true", help="Disable best validation marker")
     args = parser.parse_args()
 
-    train, val, val_meta = _load_series(args.csv)
+    train, val, val_meta, epoch_max_step = _load_series(args.csv)
     best_step = None
-    if val_meta:
+    best_label = None
+    if args.best_epoch is not None and args.best_epoch in epoch_max_step:
+        best_step = epoch_max_step[args.best_epoch]
+        best_label = f"best epoch {args.best_epoch}"
+    elif val_meta:
         best_step = int(min(val_meta, key=lambda p: p["loss"])["step"])
-    overfit_step = args.overfit_step if args.overfit_step is not None else best_step
+    overfit_step = None
+    if args.overfit_epoch is not None and args.overfit_epoch in epoch_max_step:
+        overfit_step = epoch_max_step[args.overfit_epoch]
+    else:
+        overfit_step = args.overfit_step if args.overfit_step is not None else best_step
     _write_svg(
         train=train,
         val=val,
         val_meta=val_meta,
+        best_step=best_step,
         overfit_step=overfit_step,
+        best_label=best_label,
         out_path=args.out,
         title=args.title,
         x_label=args.x_label,
