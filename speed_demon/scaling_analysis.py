@@ -2,7 +2,9 @@ import argparse
 import json
 import math
 import os
+import re
 import shutil
+import subprocess
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -54,6 +56,29 @@ def _fit_log_scaling(times: List[float], elos: List[float]) -> Optional[Tuple[fl
     slope = cov_xy / var_x
     intercept = mean_y - slope * mean_x
     return intercept, slope
+
+
+def _detect_uci_elo_range(stockfish_path: Path) -> Optional[Tuple[int, int]]:
+    try:
+        result = subprocess.run(
+            [str(stockfish_path)],
+            input="uci\nquit\n",
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+    except Exception:
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    for line in result.stdout.splitlines():
+        if "option name UCI_Elo" in line:
+            match = re.search(r"min\s+(\d+)\s+max\s+(\d+)", line)
+            if match:
+                return int(match.group(1)), int(match.group(2))
+    return None
 
 
 def _run_eval(task: Dict) -> Optional[Dict]:
@@ -197,6 +222,28 @@ def main() -> None:
 
     times = _parse_floats(args.times)
     base_elos = _parse_ints(args.base_elos)
+    base_elo_range = _detect_uci_elo_range(stockfish_path)
+    dropped_elos: List[int] = []
+    if base_elo_range is not None:
+        min_elo, max_elo = base_elo_range
+        filtered = []
+        for elo in base_elos:
+            if elo < min_elo or elo > max_elo:
+                dropped_elos.append(elo)
+            else:
+                filtered.append(elo)
+        if dropped_elos:
+            print(
+                "Warning: some base Elos are outside this Stockfish binary range "
+                f"({min_elo}-{max_elo}) and will be skipped: {dropped_elos}"
+            )
+            print(
+                "Tip: use the official Stockfish release binary if you need up to 3190."
+            )
+        base_elos = filtered
+
+    if not base_elos:
+        raise SystemExit("No valid base Elos remain for this Stockfish binary.")
     extrapolate_times = _parse_floats(args.extrapolate_times) if args.extrapolate_times else []
     run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     out_root = Path(args.out_dir) / run_id
@@ -295,6 +342,8 @@ def main() -> None:
         "stockfish": os.path.abspath(args.stockfish),
         "times": times,
         "base_elos": base_elos,
+        "base_elo_range": None if base_elo_range is None else {"min": base_elo_range[0], "max": base_elo_range[1]},
+        "dropped_base_elos": dropped_elos,
         "games_per_point": args.games,
         "total_points": len(tasks),
         "total_games": total_games,
