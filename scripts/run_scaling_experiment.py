@@ -14,10 +14,59 @@ Custom settings:
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+
+
+def check_nnue_file(nnue_path: Path) -> bool:
+    """Check if NNUE file exists and is valid (not a LFS pointer)."""
+    if not nnue_path.exists():
+        print(f"ERROR: NNUE file not found: {nnue_path}")
+        return False
+
+    size = nnue_path.stat().st_size
+    if size < 1000:  # LFS pointer files are ~130 bytes
+        print(f"ERROR: NNUE file appears to be a Git LFS pointer ({size} bytes)")
+        print(f"       Expected ~58MB for a valid NNUE file.")
+        print(f"       Run: git lfs pull")
+        return False
+
+    print(f"NNUE file OK: {nnue_path} ({size / 1024 / 1024:.1f} MB)")
+    return True
+
+
+def check_stockfish(stockfish_path: Path) -> bool:
+    """Check if Stockfish exists and runs."""
+    if not stockfish_path.exists():
+        print(f"ERROR: Stockfish not found: {stockfish_path}")
+        return False
+
+    # Try to run stockfish
+    try:
+        result = subprocess.run(
+            [str(stockfish_path)],
+            input="uci\nquit\n",
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if "uciok" in result.stdout:
+            print(f"Stockfish OK: {stockfish_path}")
+            return True
+        else:
+            print(f"ERROR: Stockfish didn't respond correctly")
+            print(f"stdout: {result.stdout[:200]}")
+            print(f"stderr: {result.stderr[:200]}")
+            return False
+    except subprocess.TimeoutExpired:
+        print(f"ERROR: Stockfish timed out")
+        return False
+    except Exception as e:
+        print(f"ERROR: Failed to run Stockfish: {e}")
+        return False
 
 
 def main():
@@ -55,12 +104,48 @@ def main():
     args = parser.parse_args()
 
     # Find repo root
-    script_dir = Path(__file__).parent
+    script_dir = Path(__file__).resolve().parent
     repo_root = script_dir.parent
+
+    # Resolve stockfish path (handle relative paths)
+    stockfish_path = Path(args.stockfish)
+    if not stockfish_path.is_absolute():
+        # Try relative to cwd first, then repo root
+        if (Path.cwd() / stockfish_path).exists():
+            stockfish_path = (Path.cwd() / stockfish_path).resolve()
+        elif (repo_root / stockfish_path).exists():
+            stockfish_path = (repo_root / stockfish_path).resolve()
+        else:
+            # Check if it's in PATH
+            found = shutil.which(args.stockfish)
+            if found:
+                stockfish_path = Path(found).resolve()
+    else:
+        stockfish_path = stockfish_path.resolve()
 
     # Default NNUE path
     if args.nnue is None:
-        args.nnue = str(repo_root / "models" / "nn-epoch16-manual.nnue")
+        nnue_path = repo_root / "models" / "nn-epoch16-manual.nnue"
+    else:
+        nnue_path = Path(args.nnue)
+        if not nnue_path.is_absolute():
+            if (Path.cwd() / nnue_path).exists():
+                nnue_path = (Path.cwd() / nnue_path).resolve()
+            elif (repo_root / nnue_path).exists():
+                nnue_path = (repo_root / nnue_path).resolve()
+    nnue_path = nnue_path.resolve()
+
+    # Validate files
+    print("=" * 60)
+    print("Checking prerequisites...")
+    print("=" * 60)
+
+    nnue_ok = check_nnue_file(nnue_path)
+    stockfish_ok = check_stockfish(stockfish_path)
+
+    if not nnue_ok or not stockfish_ok:
+        print("\nPrerequisite check failed. Please fix the errors above.")
+        sys.exit(1)
 
     # Cloud settings
     if args.cloud:
@@ -79,11 +164,12 @@ def main():
     num_elos = len(args.base_elos.split(","))
     total_games = num_times * num_elos * args.games
 
+    print()
     print("=" * 60)
     print("NNUE Scaling Experiment")
     print("=" * 60)
-    print(f"NNUE:        {args.nnue}")
-    print(f"Stockfish:   {args.stockfish}")
+    print(f"NNUE:        {nnue_path}")
+    print(f"Stockfish:   {stockfish_path}")
     print(f"Times:       {args.times}")
     print(f"Base Elos:   {args.base_elos}")
     print(f"Games/point: {args.games}")
@@ -94,12 +180,12 @@ def main():
     print(f"Total games: {total_games}")
     print("=" * 60)
 
-    # Build command
+    # Build command with absolute paths
     cmd = [
         sys.executable,
         str(repo_root / "speed_demon" / "scaling_analysis.py"),
-        "--nnue", args.nnue,
-        "--stockfish", args.stockfish,
+        "--nnue", str(nnue_path),
+        "--stockfish", str(stockfish_path),
         "--games", str(args.games),
         "--threads", str(args.threads),
         "--workers", str(args.workers),
@@ -113,7 +199,7 @@ def main():
 
     print(f"\nRunning: {' '.join(cmd)}\n")
 
-    # Run
+    # Run from repo root
     result = subprocess.run(cmd, cwd=str(repo_root))
 
     if result.returncode == 0:

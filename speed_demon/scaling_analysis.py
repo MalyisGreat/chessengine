@@ -13,6 +13,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
+# Force 'spawn' method to avoid asyncio event loop conflicts
+# This creates fresh Python interpreters for each worker
+if sys.platform != "win32":
+    try:
+        multiprocessing.set_start_method("spawn", force=True)
+    except RuntimeError:
+        pass  # Already set
+
 # Shared counter for cross-process game tracking
 _games_completed = None
 _games_lock = None
