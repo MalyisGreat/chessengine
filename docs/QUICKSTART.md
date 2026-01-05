@@ -61,3 +61,61 @@ python speed_demon/eval_vs_stockfish.py \
   --stockfish /path/to/stockfish \
   --games 10 --time-per-move 0.1 --threads 6
 ```
+
+## Search-Time Scaling Analysis
+
+Measure how your NNUE's Elo scales with search time (simulates consumer PC performance).
+
+### Quick run (local)
+
+```bash
+# Windows
+scripts\run_scaling.bat C:\stockfish\stockfish\stockfish-windows-x86-64-avx2.exe
+
+# Linux
+./scripts/run_scaling.sh /usr/bin/stockfish
+```
+
+### Cloud run (64 vCPU for faster results)
+
+```bash
+python scripts/run_scaling_experiment.py \
+  --stockfish /path/to/stockfish \
+  --cloud \
+  --games 20 \
+  --workers 8
+```
+
+### Full custom run
+
+```bash
+python speed_demon/scaling_analysis.py \
+  --nnue models/nn-epoch16-manual.nnue \
+  --stockfish /path/to/stockfish \
+  --games 20 \
+  --threads 4 \
+  --workers 8 \
+  --hash-mb 128 \
+  --times "0.05,0.1,0.2,0.4,0.8,1.5,2.0" \
+  --base-elos "2800,2900,3000,3100" \
+  --out-dir outputs/speed_demon/eval/scaling_runs \
+  --run-id my_experiment \
+  --debug-dir outputs/speed_demon/eval/scaling_runs/my_experiment/debug
+```
+
+### Scaling experiment outputs
+
+- `raw_results.jsonl` - Every game result (wins/draws/losses, scores, timestamps)
+- `summary.json` - Full stats, Elo estimates, scaling fit, parameters
+- `summary.txt` - Human-readable summary
+- `debug/` - Detailed debug logs per game
+
+### Parameters explained
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--games` | 20 | Games per test point (more = tighter error bars) |
+| `--threads` | 4 | Threads per engine (simulates consumer PC) |
+| `--workers` | 8 | Parallel games (increase on cloud for speed) |
+| `--times` | 0.05-2.0s | Time controls to test |
+| `--base-elos` | 2800-3100 | Opponent Elo levels |
