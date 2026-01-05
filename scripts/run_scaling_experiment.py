@@ -2,23 +2,95 @@
 """
 Quick launcher for scaling experiments.
 
-Usage (local):
+Usage (auto-download Stockfish):
+    python scripts/run_scaling_experiment.py --auto-stockfish
+
+Usage (local with existing Stockfish):
     python scripts/run_scaling_experiment.py --stockfish /path/to/stockfish
 
 Usage (cloud with 64 vCPU):
-    python scripts/run_scaling_experiment.py --stockfish /path/to/stockfish --cloud
+    python scripts/run_scaling_experiment.py --auto-stockfish --cloud
 
 Custom settings:
-    python scripts/run_scaling_experiment.py --stockfish /path/to/stockfish --games 50 --workers 12
+    python scripts/run_scaling_experiment.py --auto-stockfish --games 50 --workers 12
 """
 
 import argparse
 import os
+import platform
 import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.request
+import zipfile
 from datetime import datetime
 from pathlib import Path
+
+# Stockfish 16.1 URLs (compatible with our NNUE architecture)
+# NOTE: Stockfish 17+ uses a different NNUE format and is NOT compatible
+STOCKFISH_URLS = {
+    "windows": "https://github.com/official-stockfish/Stockfish/releases/download/sf_16.1/stockfish-windows-x86-64-avx2.zip",
+    "linux": "https://github.com/official-stockfish/Stockfish/releases/download/sf_16.1/stockfish-ubuntu-x86-64-avx2.tar",
+}
+
+
+def download_stockfish(repo_root: Path) -> Path:
+    """Download Stockfish 16.1 and return path to executable."""
+    system = platform.system().lower()
+    if system == "windows":
+        url = STOCKFISH_URLS["windows"]
+        install_dir = repo_root / "bin" / "stockfish"
+        exe_name = "stockfish-windows-x86-64-avx2.exe"
+    else:
+        url = STOCKFISH_URLS["linux"]
+        install_dir = repo_root / "bin" / "stockfish"
+        exe_name = "stockfish-ubuntu-x86-64-avx2"
+
+    exe_path = install_dir / exe_name
+
+    # Check if already downloaded
+    if exe_path.exists():
+        print(f"Stockfish already downloaded: {exe_path}")
+        return exe_path
+
+    print(f"Downloading Stockfish 16.1 from {url}...")
+    install_dir.mkdir(parents=True, exist_ok=True)
+
+    # Download to temp file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".zip" if system == "windows" else ".tar") as tmp:
+        tmp_path = Path(tmp.name)
+
+    try:
+        urllib.request.urlretrieve(url, tmp_path)
+        print(f"Downloaded to {tmp_path}")
+
+        # Extract
+        if system == "windows":
+            with zipfile.ZipFile(tmp_path, 'r') as zf:
+                zf.extractall(install_dir)
+            # Find the exe in extracted folder
+            for f in install_dir.rglob("*.exe"):
+                if "stockfish" in f.name.lower():
+                    exe_path = f
+                    break
+        else:
+            import tarfile
+            with tarfile.open(tmp_path, 'r') as tf:
+                tf.extractall(install_dir)
+            # Find the binary
+            for f in install_dir.rglob("stockfish*"):
+                if f.is_file() and "stockfish" in f.name.lower() and not f.suffix:
+                    exe_path = f
+                    # Make executable
+                    exe_path.chmod(exe_path.stat().st_mode | 0o755)
+                    break
+
+        print(f"Stockfish installed: {exe_path}")
+        return exe_path
+
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def check_nnue_file(nnue_path: Path) -> bool:
@@ -71,7 +143,16 @@ def check_stockfish(stockfish_path: Path) -> bool:
 
 def main():
     parser = argparse.ArgumentParser(description="Run NNUE scaling experiment")
-    parser.add_argument("--stockfish", required=True, help="Path to Stockfish binary")
+    parser.add_argument(
+        "--stockfish",
+        default=None,
+        help="Path to Stockfish binary (or use --auto-stockfish)",
+    )
+    parser.add_argument(
+        "--auto-stockfish",
+        action="store_true",
+        help="Auto-download Stockfish 16.1 (required for NNUE compatibility)",
+    )
     parser.add_argument(
         "--nnue",
         default=None,
@@ -103,25 +184,35 @@ def main():
     )
     args = parser.parse_args()
 
+    # Validate arguments
+    if not args.stockfish and not args.auto_stockfish:
+        print("ERROR: Must specify either --stockfish or --auto-stockfish")
+        print("       Use --auto-stockfish to automatically download Stockfish 16.1")
+        sys.exit(1)
+
     # Find repo root
     script_dir = Path(__file__).resolve().parent
     repo_root = script_dir.parent
 
-    # Resolve stockfish path (handle relative paths)
-    stockfish_path = Path(args.stockfish)
-    if not stockfish_path.is_absolute():
-        # Try relative to cwd first, then repo root
-        if (Path.cwd() / stockfish_path).exists():
-            stockfish_path = (Path.cwd() / stockfish_path).resolve()
-        elif (repo_root / stockfish_path).exists():
-            stockfish_path = (repo_root / stockfish_path).resolve()
+    # Handle stockfish path
+    if args.auto_stockfish:
+        stockfish_path = download_stockfish(repo_root)
+    elif args.stockfish:
+        # Resolve stockfish path (handle relative paths)
+        stockfish_path = Path(args.stockfish)
+        if not stockfish_path.is_absolute():
+            # Try relative to cwd first, then repo root
+            if (Path.cwd() / stockfish_path).exists():
+                stockfish_path = (Path.cwd() / stockfish_path).resolve()
+            elif (repo_root / stockfish_path).exists():
+                stockfish_path = (repo_root / stockfish_path).resolve()
+            else:
+                # Check if it's in PATH
+                found = shutil.which(args.stockfish)
+                if found:
+                    stockfish_path = Path(found).resolve()
         else:
-            # Check if it's in PATH
-            found = shutil.which(args.stockfish)
-            if found:
-                stockfish_path = Path(found).resolve()
-    else:
-        stockfish_path = stockfish_path.resolve()
+            stockfish_path = stockfish_path.resolve()
 
     # Default NNUE path
     if args.nnue is None:

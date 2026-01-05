@@ -66,24 +66,36 @@ python speed_demon/eval_vs_stockfish.py \
 
 Measure how your NNUE's Elo scales with search time (simulates consumer PC performance).
 
-### Quick run (local)
+**IMPORTANT:** This requires Stockfish 16.1 (NOT 17+) because our NNUE uses the older network architecture. The scripts auto-download the correct version.
+
+### One-command cloud setup (64 vCPU recommended)
+
+```bash
+# Clone, install deps, auto-download Stockfish 16.1, run experiment
+git clone https://github.com/MalyisGreat/chessengine.git
+cd chessengine
+pip install chess
+python scripts/run_scaling_experiment.py --auto-stockfish --cloud
+```
+
+### Quick run (local - auto-downloads Stockfish)
 
 ```bash
 # Windows
-scripts\run_scaling.bat C:\stockfish\stockfish\stockfish-windows-x86-64-avx2.exe
+scripts\run_scaling.bat
 
 # Linux
-./scripts/run_scaling.sh /usr/bin/stockfish
+./scripts/run_scaling.sh
 ```
 
-### Cloud run (64 vCPU for faster results)
+### Cloud run with custom settings
 
 ```bash
 python scripts/run_scaling_experiment.py \
-  --stockfish /path/to/stockfish \
+  --auto-stockfish \
   --cloud \
   --games 20 \
-  --workers 8
+  --workers 10
 ```
 
 ### Full custom run
@@ -91,7 +103,7 @@ python scripts/run_scaling_experiment.py \
 ```bash
 python speed_demon/scaling_analysis.py \
   --nnue models/nn-epoch16-manual.nnue \
-  --stockfish /path/to/stockfish \
+  --stockfish bin/stockfish/stockfish-ubuntu-x86-64-avx2 \
   --games 20 \
   --threads 4 \
   --workers 8 \

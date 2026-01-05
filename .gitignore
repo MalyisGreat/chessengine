@@ -65,3 +65,6 @@ nnue-pytorch/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Downloaded binaries (Stockfish, etc.)
+bin/

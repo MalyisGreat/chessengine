@@ -185,11 +185,11 @@ def _print_progress(
     rate = completed_games / elapsed if elapsed > 0 else 0
     remaining_games = total_games - completed_games
     eta = remaining_games / rate if rate > 0 else float("inf")
-    # Progress bar
+    # Progress bar (ASCII-safe for Windows compatibility)
     pct = completed_games / total_games if total_games > 0 else 0
     bar_width = 30
     filled = int(bar_width * pct)
-    bar = "█" * filled + "░" * (bar_width - filled)
+    bar = "#" * filled + "-" * (bar_width - filled)
     sys.stdout.write(
         f"\r[{bar}] {completed_games}/{total_games} games ({pct*100:.1f}%) | "
         f"{completed_points}/{total_points} points | "
