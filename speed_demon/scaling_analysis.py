@@ -2,6 +2,7 @@ import argparse
 import json
 import math
 import os
+import shutil
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -178,6 +179,22 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    nnue_path = Path(args.nnue)
+    if not nnue_path.is_file():
+        raise SystemExit(f"NNUE file not found: {nnue_path}")
+
+    stockfish_path = Path(args.stockfish)
+    if not stockfish_path.is_file():
+        resolved = shutil.which(args.stockfish)
+        if resolved:
+            stockfish_path = Path(resolved)
+        else:
+            raise SystemExit(
+                f"Stockfish binary not found: {args.stockfish}\n"
+                "Tip: pass the full path to the binary, e.g. "
+                "/root/.stockfish/stockfish/stockfish/stockfish-ubuntu-x86-64-avx2"
+            )
+
     times = _parse_floats(args.times)
     base_elos = _parse_ints(args.base_elos)
     extrapolate_times = _parse_floats(args.extrapolate_times) if args.extrapolate_times else []
@@ -193,8 +210,8 @@ def main() -> None:
             base_time = args.base_time if args.base_time is not None else t
             tasks.append(
                 {
-                    "nnue": args.nnue,
-                    "stockfish": args.stockfish,
+                    "nnue": str(nnue_path),
+                    "stockfish": str(stockfish_path),
                     "games": args.games,
                     "test_time": t,
                     "base_time": base_time,
