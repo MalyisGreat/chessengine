@@ -35,6 +35,22 @@
 | 19 | 0/5/5 | 0.250 | 2809.2 |
 | 23 | 1/7/2 | 0.450 | 2965.1 |
 
+## Search-Time Scaling (Epoch 16 NNUE)
+
+Run: 2026-01-05 (Stockfish 16.1, base Elos 2600–3190, 5 games/point, threads 4, workers 12).
+
+![Search-Time Scaling (Epoch 16 NNUE)](scaling_run_20260105_041456.svg)
+
+Data: `docs/scaling_run_20260105_041456.csv`
+
+## Loss Curve (Epoch 16 Run)
+
+Train and validation snapshots from the epoch 16 run.
+
+![Loss Curve (Epoch 16 Run)](loss_curve_epoch16.svg)
+
+Data: `docs/loss_curve_epoch16.csv`
+
 ## Notes
 
 - Small samples are noisy. Prefer 20+ games for stable estimates.
