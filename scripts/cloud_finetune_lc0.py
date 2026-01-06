@@ -86,6 +86,67 @@ def ensure_nnue_pytorch():
     return NNUE_PYTORCH_DIR.exists()
 
 
+def ensure_data_loader():
+    """Build the C++ data loader with BMI2 support for fast training.
+
+    Without BMI2, data loading is ~100x slower and bottlenecks the GPU.
+    Uses -march=native to auto-detect CPU features including BMI2.
+    """
+    # Check for library in nnue-pytorch root (where train.py looks for it)
+    lib_name = "libtraining_data_loader.so"
+    lib_path = NNUE_PYTORCH_DIR / lib_name
+    build_dir = NNUE_PYTORCH_DIR / "build"
+    built_lib = build_dir / lib_name
+
+    if lib_path.exists():
+        print(f"\nData loader already exists: {lib_path}")
+        return True
+
+    print("\n" + "="*60)
+    print("Building C++ Data Loader (with BMI2 support)")
+    print("="*60)
+    print("This is required for fast training. Without BMI2, training")
+    print("will be ~100x slower due to data loading bottleneck.")
+
+    # Create build directory
+    build_dir.mkdir(parents=True, exist_ok=True)
+
+    # Run cmake with -march=native to enable BMI2 automatically
+    print("\nRunning cmake with -march=native...")
+    cmake_cmd = [
+        "cmake", "..",
+        "-DCMAKE_CXX_FLAGS=-march=native"
+    ]
+    if not run_command(cmake_cmd, cwd=build_dir, check=False):
+        print("ERROR: cmake failed!")
+        print("Make sure cmake and a C++ compiler are installed.")
+        return False
+
+    # Build
+    print("\nBuilding data loader...")
+    # Detect number of cores
+    try:
+        import multiprocessing
+        nproc = multiprocessing.cpu_count()
+    except:
+        nproc = 4
+
+    make_cmd = ["make", f"-j{nproc}"]
+    if not run_command(make_cmd, cwd=build_dir, check=False):
+        print("ERROR: make failed!")
+        return False
+
+    # Copy library to nnue-pytorch root where train.py can find it
+    if built_lib.exists():
+        print(f"\nCopying {lib_name} to {NNUE_PYTORCH_DIR}")
+        shutil.copy2(built_lib, lib_path)
+        print("Data loader built successfully with BMI2 support!")
+        return True
+    else:
+        print(f"ERROR: {built_lib} not found after build")
+        return False
+
+
 def download_file(url, dest, desc="Downloading"):
     """Download a file with progress."""
     print(f"\n{desc}: {url}")
@@ -285,6 +346,12 @@ def main():
     # Ensure nnue-pytorch is available
     if not ensure_nnue_pytorch():
         print("ERROR: Could not set up nnue-pytorch")
+        sys.exit(1)
+
+    # Build data loader with BMI2 support (critical for performance)
+    if not ensure_data_loader():
+        print("ERROR: Could not build data loader")
+        print("Training will be extremely slow without BMI2 support.")
         sys.exit(1)
 
     # ========================================================================
