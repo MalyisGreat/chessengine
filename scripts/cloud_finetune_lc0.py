@@ -115,6 +115,17 @@ def ensure_data_loader(force_rebuild=False):
     print("This is required for fast training. Without BMI2, training")
     print("will be ~100x slower due to data loading bottleneck.")
 
+    # Check if cmake is available, install if not (Linux only)
+    if shutil.which("cmake") is None:
+        print("\ncmake not found, installing build dependencies...")
+        install_cmd = ["apt-get", "update"]
+        subprocess.run(install_cmd, check=False)
+        install_cmd = ["apt-get", "install", "-y", "cmake", "build-essential"]
+        if subprocess.run(install_cmd, check=False).returncode != 0:
+            print("ERROR: Could not install cmake. Please install manually:")
+            print("  apt-get install cmake build-essential")
+            return False
+
     # Create build directory
     build_dir.mkdir(parents=True, exist_ok=True)
 
