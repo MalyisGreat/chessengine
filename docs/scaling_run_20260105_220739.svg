@@ -1,71 +1,90 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 420">
+<defs>
+  <linearGradient id="bgGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%" style="stop-color:#fafbfc"/>
+    <stop offset="100%" style="stop-color:#f0f2f5"/>
+  </linearGradient>
+  <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+    <feDropShadow dx="1" dy="1" stdDeviation="1" flood-opacity="0.15"/>
+  </filter>
+</defs>
 <style>
-  .title { font: bold 16px sans-serif; }
-  .axis-label { font: 12px sans-serif; }
-  .tick-label { font: 10px sans-serif; }
-  .grid { stroke: #e0e0e0; stroke-width: 1; }
-  .line { fill: none; stroke: #2196F3; stroke-width: 2; }
-  .point { fill: #2196F3; }
-  .point-label { font: 9px sans-serif; fill: #333; }
-  .extra-point { fill: #FF9800; }
-  .extra-label { font: 9px sans-serif; fill: #E65100; }
-  .legend { font: 10px sans-serif; }
+  .title { font: bold 18px "Segoe UI", sans-serif; fill: #1a1a2e; }
+  .subtitle { font: 11px "Segoe UI", sans-serif; fill: #666; }
+  .axis-label { font: 12px "Segoe UI", sans-serif; fill: #444; }
+  .tick-label { font: 10px "Segoe UI", sans-serif; fill: #555; }
+  .grid { stroke: #dde1e6; stroke-width: 1; stroke-dasharray: 4,3; }
+  .axis { stroke: #888; stroke-width: 1.5; }
+  .line { fill: none; stroke: #2563eb; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+  .extra-line { fill: none; stroke: #f59e0b; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 8,4; }
+  .point { fill: #2563eb; stroke: white; stroke-width: 2; }
+  .point-label { font: bold 10px "Segoe UI", sans-serif; fill: #1e40af; }
+  .extra-point { fill: #f59e0b; stroke: white; stroke-width: 2; }
+  .extra-label { font: bold 10px "Segoe UI", sans-serif; fill: #b45309; }
+  .legend-box { fill: white; stroke: #ddd; stroke-width: 1; rx: 4; }
+  .legend { font: 11px "Segoe UI", sans-serif; fill: #333; }
+  .legend-line { stroke-width: 2.5; stroke-linecap: round; }
 </style>
-<rect width="600" height="400" fill="white"/>
-<text x="300.0" y="25" text-anchor="middle" class="title">Search-Time Scaling (Epoch 16 NNUE) - 20 games/point</text>
-<line x1="70" y1="299.7495527728086" x2="570" y2="299.7495527728086" class="grid"/>
-<text x="65" y="303.7495527728086" text-anchor="end" class="tick-label">2700</text>
-<line x1="70" y1="246.08228980322002" x2="570" y2="246.08228980322002" class="grid"/>
-<text x="65" y="250.08228980322002" text-anchor="end" class="tick-label">2800</text>
-<line x1="70" y1="192.4150268336315" x2="570" y2="192.4150268336315" class="grid"/>
-<text x="65" y="196.4150268336315" text-anchor="end" class="tick-label">2900</text>
-<line x1="70" y1="138.74776386404295" x2="570" y2="138.74776386404295" class="grid"/>
-<text x="65" y="142.74776386404295" text-anchor="end" class="tick-label">3000</text>
-<line x1="70" y1="85.08050089445439" x2="570" y2="85.08050089445439" class="grid"/>
-<text x="65" y="89.08050089445439" text-anchor="end" class="tick-label">3100</text>
-<line x1="70.0" y1="40" x2="70.0" y2="340" class="grid"/>
-<text x="70.0" y="355" text-anchor="middle" class="tick-label">0.05s</text>
-<line x1="145.2574989159953" y1="40" x2="145.2574989159953" y2="340" class="grid"/>
-<text x="145.2574989159953" y="355" text-anchor="middle" class="tick-label">0.1s</text>
-<line x1="220.51499783199063" y1="40" x2="220.51499783199063" y2="340" class="grid"/>
-<text x="220.51499783199063" y="355" text-anchor="middle" class="tick-label">0.2s</text>
-<line x1="295.7724967479859" y1="40" x2="295.7724967479859" y2="340" class="grid"/>
-<text x="295.7724967479859" y="355" text-anchor="middle" class="tick-label">0.4s</text>
-<line x1="371.0299956639812" y1="40" x2="371.0299956639812" y2="340" class="grid"/>
-<text x="371.0299956639812" y="355" text-anchor="middle" class="tick-label">0.8s</text>
-<line x1="439.28031367991565" y1="40" x2="439.28031367991565" y2="340" class="grid"/>
-<text x="439.28031367991565" y="355" text-anchor="middle" class="tick-label">1.5s</text>
-<line x1="470.5149978319906" y1="40" x2="470.5149978319906" y2="340" class="grid"/>
-<text x="470.5149978319906" y="355" text-anchor="middle" class="tick-label">2.0s</text>
-<line x1="514.537812595911" y1="40" x2="514.537812595911" y2="340" class="grid"/>
-<text x="514.537812595911" y="355" text-anchor="middle" class="tick-label">3.0s</text>
-<line x1="570.0" y1="40" x2="570.0" y2="340" class="grid"/>
-<text x="570.0" y="355" text-anchor="middle" class="tick-label">5.0s</text>
-<line x1="70" y1="340" x2="570" y2="340" stroke="black" stroke-width="1"/>
-<line x1="70" y1="40" x2="70" y2="340" stroke="black" stroke-width="1"/>
-<text x="300.0" y="385" text-anchor="middle" class="axis-label">Search Time (seconds, log scale)</text>
-<text x="15" y="200.0" text-anchor="middle" transform="rotate(-90, 15, 200.0)" class="axis-label">Estimated Elo</text>
-<path d="M 70.0,313.2 L 145.3,243.4 L 220.5,210.1 L 295.8,205.3 L 371.0,183.3 L 439.3,142.0 L 470.5,161.3" class="line"/>
-<circle cx="70.0" cy="313.1663685152057" r="5" class="point"/>
-<text x="70.0" y="303.1663685152057" text-anchor="middle" class="point-label">2675.0</text>
-<circle cx="145.2574989159953" cy="243.3989266547406" r="5" class="point"/>
-<text x="145.2574989159953" y="233.3989266547406" text-anchor="middle" class="point-label">2805.0</text>
-<circle cx="220.51499783199063" cy="210.1252236135957" r="5" class="point"/>
-<text x="220.51499783199063" y="200.1252236135957" text-anchor="middle" class="point-label">2867.0</text>
-<circle cx="295.7724967479859" cy="205.29516994633275" r="5" class="point"/>
-<text x="295.7724967479859" y="195.29516994633275" text-anchor="middle" class="point-label">2876.0</text>
-<circle cx="371.0299956639812" cy="183.29159212880143" r="5" class="point"/>
-<text x="371.0299956639812" y="173.29159212880143" text-anchor="middle" class="point-label">2917.0</text>
-<circle cx="439.28031367991565" cy="141.96779964221824" r="5" class="point"/>
-<text x="439.28031367991565" y="131.96779964221824" text-anchor="middle" class="point-label">2994.0</text>
-<circle cx="470.5149978319906" cy="161.28801431127013" r="5" class="point"/>
-<text x="470.5149978319906" y="151.28801431127013" text-anchor="middle" class="point-label">2958.0</text>
-<circle cx="514.537812595911" cy="195.6350626118068" r="5" class="extra-point"/>
-<text x="514.537812595911" y="185.6350626118068" text-anchor="middle" class="extra-label">2894.0</text>
-<circle cx="570.0" cy="66.8336314847943" r="5" class="extra-point"/>
-<text x="570.0" y="56.833631484794296" text-anchor="middle" class="extra-label">3134.0</text>
-<circle cx="450" cy="50" r="4" class="point"/>
-<text x="458" y="54" class="legend">20 games/point</text>
-<circle cx="450" cy="65" r="4" class="extra-point"/>
-<text x="458" y="69" class="legend">5 games/point</text>
+<rect width="700" height="420" fill="url(#bgGrad)"/>
+<rect x="75" y="50" width="585" height="305" fill="white" rx="2"/>
+<text x="350.0" y="28" text-anchor="middle" class="title">Search-Time Scaling (Epoch 16 NNUE)</text>
+<line x1="75" y1="314.07871198568876" x2="660" y2="314.07871198568876" class="grid"/>
+<text x="67" y="318.07871198568876" text-anchor="end" class="tick-label">2700</text>
+<line x1="75" y1="259.5169946332737" x2="660" y2="259.5169946332737" class="grid"/>
+<text x="67" y="263.5169946332737" text-anchor="end" class="tick-label">2800</text>
+<line x1="75" y1="204.95527728085867" x2="660" y2="204.95527728085867" class="grid"/>
+<text x="67" y="208.95527728085867" text-anchor="end" class="tick-label">2900</text>
+<line x1="75" y1="150.39355992844366" x2="660" y2="150.39355992844366" class="grid"/>
+<text x="67" y="154.39355992844366" text-anchor="end" class="tick-label">3000</text>
+<line x1="75" y1="95.83184257602863" x2="660" y2="95.83184257602863" class="grid"/>
+<text x="67" y="99.83184257602863" text-anchor="end" class="tick-label">3100</text>
+<line x1="75.0" y1="50" x2="75.0" y2="355" class="grid"/>
+<text x="75.0" y="373" text-anchor="middle" class="tick-label">0.05s</text>
+<line x1="163.0512737317145" y1="50" x2="163.0512737317145" y2="355" class="grid"/>
+<text x="163.0512737317145" y="373" text-anchor="middle" class="tick-label">0.1s</text>
+<line x1="251.10254746342903" y1="50" x2="251.10254746342903" y2="355" class="grid"/>
+<text x="251.10254746342903" y="373" text-anchor="middle" class="tick-label">0.2s</text>
+<line x1="339.1538211951435" y1="50" x2="339.1538211951435" y2="355" class="grid"/>
+<text x="339.1538211951435" y="373" text-anchor="middle" class="tick-label">0.4s</text>
+<line x1="427.205094926858" y1="50" x2="427.205094926858" y2="355" class="grid"/>
+<text x="427.205094926858" y="373" text-anchor="middle" class="tick-label">0.8s</text>
+<line x1="507.0579670055013" y1="50" x2="507.0579670055013" y2="355" class="grid"/>
+<text x="507.0579670055013" y="373" text-anchor="middle" class="tick-label">1.5s</text>
+<line x1="543.602547463429" y1="50" x2="543.602547463429" y2="355" class="grid"/>
+<text x="543.602547463429" y="373" text-anchor="middle" class="tick-label">2.0s</text>
+<line x1="595.1092407372157" y1="50" x2="595.1092407372157" y2="355" class="grid"/>
+<text x="595.1092407372157" y="373" text-anchor="middle" class="tick-label">3.0s</text>
+<line x1="660.0" y1="50" x2="660.0" y2="355" class="grid"/>
+<text x="660.0" y="373" text-anchor="middle" class="tick-label">5.0s</text>
+<line x1="75" y1="355" x2="660" y2="355" class="axis"/>
+<line x1="75" y1="50" x2="75" y2="355" class="axis"/>
+<text x="350.0" y="402" text-anchor="middle" class="axis-label">Search Time (seconds, log scale)</text>
+<text x="18" y="210.0" text-anchor="middle" transform="rotate(-90, 18, 210.0)" class="axis-label">Estimated Elo</text>
+<path d="M 75.0,327.7 L 163.1,256.8 L 251.1,223.0 L 339.2,218.1 L 427.2,195.7 L 507.1,153.7 L 543.6,173.3" class="line"/>
+<circle cx="75.0" cy="327.7191413237925" r="6" class="point" filter="url(#shadow)"/>
+<text x="75.0" y="315.7191413237925" text-anchor="middle" class="point-label">2675</text>
+<circle cx="163.0512737317145" cy="256.78890876565293" r="6" class="point" filter="url(#shadow)"/>
+<text x="163.0512737317145" y="244.78890876565293" text-anchor="middle" class="point-label">2805</text>
+<circle cx="251.10254746342903" cy="222.96064400715562" r="6" class="point" filter="url(#shadow)"/>
+<text x="251.10254746342903" y="210.96064400715562" text-anchor="middle" class="point-label">2867</text>
+<circle cx="339.1538211951435" cy="218.0500894454383" r="6" class="point" filter="url(#shadow)"/>
+<text x="339.1538211951435" y="206.0500894454383" text-anchor="middle" class="point-label">2876</text>
+<circle cx="427.205094926858" cy="195.67978533094814" r="6" class="point" filter="url(#shadow)"/>
+<text x="427.205094926858" y="183.67978533094814" text-anchor="middle" class="point-label">2917</text>
+<circle cx="507.0579670055013" cy="153.66726296958856" r="6" class="point" filter="url(#shadow)"/>
+<text x="507.0579670055013" y="141.66726296958856" text-anchor="middle" class="point-label">2994</text>
+<circle cx="543.602547463429" cy="173.30948121645795" r="6" class="point" filter="url(#shadow)"/>
+<text x="543.602547463429" y="161.30948121645795" text-anchor="middle" class="point-label">2958</text>
+<path d="M 595.1,208.2 L 660.0,77.3" class="extra-line"/>
+<circle cx="595.1092407372157" cy="208.2289803220036" r="6" class="extra-point" filter="url(#shadow)"/>
+<text x="595.1092407372157" y="196.2289803220036" text-anchor="middle" class="extra-label">2894</text>
+<circle cx="660.0" cy="77.28085867620752" r="6" class="extra-point" filter="url(#shadow)"/>
+<text x="660.0" y="65.28085867620752" text-anchor="middle" class="extra-label">3134</text>
+<rect x="90" y="62" width="135" height="50" class="legend-box"/>
+<line x1="100" y1="80" x2="125" y2="80" stroke="#2563eb" class="legend-line"/>
+<circle cx="112" cy="80" r="4" fill="#2563eb"/>
+<text x="132" y="84" class="legend">20 games/point</text>
+<line x1="100" y1="100" x2="125" y2="100" stroke="#f59e0b" stroke-dasharray="6,3" class="legend-line"/>
+<circle cx="112" cy="100" r="4" fill="#f59e0b"/>
+<text x="132" y="104" class="legend">5 games/point</text>
 </svg>
