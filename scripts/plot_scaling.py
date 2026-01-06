@@ -57,8 +57,8 @@ def generate_svg(times, elos, output_path, title="Search-Time Scaling"):
             svg_parts.append(f'<line x1="{margin["left"]}" y1="{y}" x2="{width - margin["right"]}" y2="{y}" class="grid"/>')
             svg_parts.append(f'<text x="{margin["left"] - 5}" y="{y + 4}" text-anchor="end" class="tick-label">{elo}</text>')
 
-    # Grid lines (vertical) - time ticks
-    time_ticks = [0.05, 0.1, 0.2, 0.5, 1.0, 2.0]
+    # Grid lines (vertical) - use actual data times as ticks
+    time_ticks = times  # Use the actual data points
     for t in time_ticks:
         if min_time <= t <= max_time:
             x = scale_x(t)

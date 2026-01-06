@@ -24,10 +24,12 @@
 <text x="163.9509123545538" y="355" text-anchor="middle" class="tick-label">0.1s</text>
 <line x1="257.9018247091076" y1="40" x2="257.9018247091076" y2="340" class="grid"/>
 <text x="257.9018247091076" y="355" text-anchor="middle" class="tick-label">0.2s</text>
-<line x1="382.0981752908924" y1="40" x2="382.0981752908924" y2="340" class="grid"/>
-<text x="382.0981752908924" y="355" text-anchor="middle" class="tick-label">0.5s</text>
-<line x1="476.0490876454462" y1="40" x2="476.0490876454462" y2="340" class="grid"/>
-<text x="476.0490876454462" y="355" text-anchor="middle" class="tick-label">1.0s</text>
+<line x1="351.8527370636614" y1="40" x2="351.8527370636614" y2="340" class="grid"/>
+<text x="351.8527370636614" y="355" text-anchor="middle" class="tick-label">0.4s</text>
+<line x1="445.8036494182152" y1="40" x2="445.8036494182152" y2="340" class="grid"/>
+<text x="445.8036494182152" y="355" text-anchor="middle" class="tick-label">0.8s</text>
+<line x1="531.0068482814002" y1="40" x2="531.0068482814002" y2="340" class="grid"/>
+<text x="531.0068482814002" y="355" text-anchor="middle" class="tick-label">1.5s</text>
 <line x1="570.0" y1="40" x2="570.0" y2="340" class="grid"/>
 <text x="570.0" y="355" text-anchor="middle" class="tick-label">2.0s</text>
 <line x1="70" y1="340" x2="570" y2="340" stroke="black" stroke-width="1"/>
