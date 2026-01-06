@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">
+<style>
+  .title { font: bold 16px sans-serif; }
+  .axis-label { font: 12px sans-serif; }
+  .tick-label { font: 10px sans-serif; }
+  .grid { stroke: #e0e0e0; stroke-width: 1; }
+  .line { fill: none; stroke: #2196F3; stroke-width: 2; }
+  .point { fill: #2196F3; }
+  .point-label { font: 9px sans-serif; fill: #333; }
+</style>
+<rect width="600" height="400" fill="white"/>
+<text x="300.0" y="25" text-anchor="middle" class="title">Search-Time Scaling (Epoch 16 NNUE) - 20 games/point</text>
+<line x1="70" y1="286.30071599045345" x2="570" y2="286.30071599045345" class="grid"/>
+<text x="65" y="290.30071599045345" text-anchor="end" class="tick-label">2700</text>
+<line x1="70" y1="214.7016706443914" x2="570" y2="214.7016706443914" class="grid"/>
+<text x="65" y="218.7016706443914" text-anchor="end" class="tick-label">2800</text>
+<line x1="70" y1="143.10262529832937" x2="570" y2="143.10262529832937" class="grid"/>
+<text x="65" y="147.10262529832937" text-anchor="end" class="tick-label">2900</text>
+<line x1="70" y1="71.50357995226727" x2="570" y2="71.50357995226727" class="grid"/>
+<text x="65" y="75.50357995226727" text-anchor="end" class="tick-label">3000</text>
+<line x1="70.0" y1="40" x2="70.0" y2="340" class="grid"/>
+<text x="70.0" y="355" text-anchor="middle" class="tick-label">0.05s</text>
+<line x1="163.9509123545538" y1="40" x2="163.9509123545538" y2="340" class="grid"/>
+<text x="163.9509123545538" y="355" text-anchor="middle" class="tick-label">0.1s</text>
+<line x1="257.9018247091076" y1="40" x2="257.9018247091076" y2="340" class="grid"/>
+<text x="257.9018247091076" y="355" text-anchor="middle" class="tick-label">0.2s</text>
+<line x1="382.0981752908924" y1="40" x2="382.0981752908924" y2="340" class="grid"/>
+<text x="382.0981752908924" y="355" text-anchor="middle" class="tick-label">0.5s</text>
+<line x1="476.0490876454462" y1="40" x2="476.0490876454462" y2="340" class="grid"/>
+<text x="476.0490876454462" y="355" text-anchor="middle" class="tick-label">1.0s</text>
+<line x1="570.0" y1="40" x2="570.0" y2="340" class="grid"/>
+<text x="570.0" y="355" text-anchor="middle" class="tick-label">2.0s</text>
+<line x1="70" y1="340" x2="570" y2="340" stroke="black" stroke-width="1"/>
+<line x1="70" y1="40" x2="70" y2="340" stroke="black" stroke-width="1"/>
+<text x="300.0" y="385" text-anchor="middle" class="axis-label">Search Time (seconds, log scale)</text>
+<text x="15" y="200.0" text-anchor="middle" transform="rotate(-90, 15, 200.0)" class="axis-label">Estimated Elo</text>
+<path d="M 70.0,304.2 L 164.0,211.1 L 257.9,166.7 L 351.9,160.3 L 445.8,130.9 L 531.0,75.8 L 570.0,101.6" class="line"/>
+<circle cx="70.0" cy="304.200477326969" r="5" class="point"/>
+<text x="70.0" y="294.200477326969" text-anchor="middle" class="point-label">2675.0</text>
+<circle cx="163.9509123545538" cy="211.1217183770883" r="5" class="point"/>
+<text x="163.9509123545538" y="201.1217183770883" text-anchor="middle" class="point-label">2805.0</text>
+<circle cx="257.9018247091076" cy="166.73031026252983" r="5" class="point"/>
+<text x="257.9018247091076" y="156.73031026252983" text-anchor="middle" class="point-label">2867.0</text>
+<circle cx="351.8527370636614" cy="160.28639618138425" r="5" class="point"/>
+<text x="351.8527370636614" y="150.28639618138425" text-anchor="middle" class="point-label">2876.0</text>
+<circle cx="445.8036494182152" cy="130.9307875894988" r="5" class="point"/>
+<text x="445.8036494182152" y="120.9307875894988" text-anchor="middle" class="point-label">2917.0</text>
+<circle cx="531.0068482814002" cy="75.79952267303105" r="5" class="point"/>
+<text x="531.0068482814002" y="65.79952267303105" text-anchor="middle" class="point-label">2994.0</text>
+<circle cx="570.0" cy="101.57517899761336" r="5" class="point"/>
+<text x="570.0" y="91.57517899761336" text-anchor="middle" class="point-label">2958.0</text>
+</svg>

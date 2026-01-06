@@ -37,9 +37,31 @@
 
 ## Search-Time Scaling (Epoch 16 NNUE)
 
-Run: 2026-01-05 (Stockfish 16.1, base Elos 2600–3190, 5 games/point, threads 4, workers 12).
+### Latest Run (2026-01-05, 20 games/point)
 
-![Search-Time Scaling (Epoch 16 NNUE)](scaling_run_20260105_041456.svg)
+Run: 2026-01-05 22:07 (Stockfish 16.1, base Elos 2800-3100, 20 games/point, threads 4, workers 10).
+
+![Search-Time Scaling (Epoch 16 NNUE)](scaling_run_20260105_220739.svg)
+
+| Time | Elo | Gain |
+|------|-----|------|
+| 0.05s | 2675 | - |
+| 0.10s | 2805 | +130 |
+| 0.20s | 2867 | +62 |
+| 0.40s | 2876 | +9 |
+| 0.80s | 2917 | +41 |
+| 1.50s | 2994 | +77 |
+| 2.00s | 2958 | -36 (noise) |
+
+**Extrapolation model:** `elo = 2942.4 + 50.4 * log2(time)`
+
+Data: `docs/scaling_run_20260105_220739.csv`
+
+### Previous Run (2026-01-05, 5 games/point)
+
+Run: 2026-01-05 04:14 (Stockfish 16.1, base Elos 2600-3190, 5 games/point, threads 4, workers 12).
+
+![Search-Time Scaling (Epoch 16 NNUE) - Old](scaling_run_20260105_041456.svg)
 
 Data: `docs/scaling_run_20260105_041456.csv`
 
