@@ -86,7 +86,7 @@ def ensure_nnue_pytorch():
     return NNUE_PYTORCH_DIR.exists()
 
 
-def ensure_data_loader():
+def ensure_data_loader(force_rebuild=False):
     """Build the C++ data loader with BMI2 support for fast training.
 
     Without BMI2, data loading is ~100x slower and bottlenecks the GPU.
@@ -98,9 +98,16 @@ def ensure_data_loader():
     build_dir = NNUE_PYTORCH_DIR / "build"
     built_lib = build_dir / lib_name
 
-    if lib_path.exists():
+    if lib_path.exists() and not force_rebuild:
         print(f"\nData loader already exists: {lib_path}")
         return True
+
+    if force_rebuild:
+        print("\n--rebuild-loader specified, forcing fresh build...")
+        if lib_path.exists():
+            lib_path.unlink()
+        if build_dir.exists():
+            shutil.rmtree(build_dir)
 
     print("\n" + "="*60)
     print("Building C++ Data Loader (with BMI2 support)")
@@ -336,6 +343,10 @@ def main():
     parser.add_argument("--export-name", type=str, default="nn-finetuned-lc0.nnue",
                         help="Name for exported NNUE file")
 
+    # Build options
+    parser.add_argument("--rebuild-loader", action="store_true",
+                        help="Force rebuild of C++ data loader (use if training is slow)")
+
     args = parser.parse_args()
 
     print("="*60)
@@ -349,7 +360,7 @@ def main():
         sys.exit(1)
 
     # Build data loader with BMI2 support (critical for performance)
-    if not ensure_data_loader():
+    if not ensure_data_loader(force_rebuild=args.rebuild_loader):
         print("ERROR: Could not build data loader")
         print("Training will be extremely slow without BMI2 support.")
         sys.exit(1)
