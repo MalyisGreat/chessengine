@@ -52,6 +52,18 @@ def run_command(cmd, cwd=None, check=True):
     return result.returncode == 0
 
 
+def ensure_nnue_pytorch():
+    """Ensure nnue-pytorch is cloned."""
+    if not NNUE_PYTORCH_DIR.exists():
+        print("\nnnue-pytorch not found. Cloning...")
+        run_command([
+            "git", "clone",
+            "https://github.com/official-stockfish/nnue-pytorch.git",
+            str(NNUE_PYTORCH_DIR)
+        ])
+    return NNUE_PYTORCH_DIR.exists()
+
+
 def download_file(url, dest, desc="Downloading"):
     """Download a file with progress."""
     print(f"\n{desc}: {url}")
@@ -236,6 +248,11 @@ def main():
     print("NNUE FINE-TUNING ON LC0 DATA")
     print("="*60)
     print(f"Project root: {PROJECT_ROOT}")
+
+    # Ensure nnue-pytorch is available
+    if not ensure_nnue_pytorch():
+        print("ERROR: Could not set up nnue-pytorch")
+        sys.exit(1)
 
     # ========================================================================
     # STEP 1: Download Lc0 data (if needed)
