@@ -148,7 +148,7 @@ def convert_nnue_to_pt(nnue_path, pt_path):
         "--l1", str(L1)
     ]
 
-    return run_command(cmd, cwd=NNUE_PYTORCH_DIR)
+    return run_command(cmd, cwd=NNUE_PYTORCH_DIR, check=False)
 
 
 def convert_ckpt_to_nnue(ckpt_path, nnue_path):
