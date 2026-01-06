@@ -5,7 +5,8 @@ import argparse
 import csv
 from pathlib import Path
 
-def generate_svg(times, elos, output_path, title="Search-Time Scaling"):
+def generate_svg(times, elos, output_path, title="Search-Time Scaling",
+                 extra_times=None, extra_elos=None, extra_label=None):
     """Generate an SVG plot of Elo vs search time."""
     # SVG dimensions
     width = 600
@@ -14,11 +15,13 @@ def generate_svg(times, elos, output_path, title="Search-Time Scaling"):
     plot_width = width - margin["left"] - margin["right"]
     plot_height = height - margin["top"] - margin["bottom"]
 
-    # Data ranges
-    min_time = min(times)
-    max_time = max(times)
-    min_elo = min(elos) - 50
-    max_elo = max(elos) + 50
+    # Data ranges (include extra points if present)
+    all_times = times + (extra_times or [])
+    all_elos = elos + (extra_elos or [])
+    min_time = min(all_times)
+    max_time = max(all_times)
+    min_elo = min(all_elos) - 50
+    max_elo = max(all_elos) + 50
 
     # Scale functions (log scale for time)
     import math
@@ -41,6 +44,9 @@ def generate_svg(times, elos, output_path, title="Search-Time Scaling"):
     svg_parts.append('  .line { fill: none; stroke: #2196F3; stroke-width: 2; }')
     svg_parts.append('  .point { fill: #2196F3; }')
     svg_parts.append('  .point-label { font: 9px sans-serif; fill: #333; }')
+    svg_parts.append('  .extra-point { fill: #FF9800; }')
+    svg_parts.append('  .extra-label { font: 9px sans-serif; fill: #E65100; }')
+    svg_parts.append('  .legend { font: 10px sans-serif; }')
     svg_parts.append('</style>')
 
     # Background
@@ -58,7 +64,7 @@ def generate_svg(times, elos, output_path, title="Search-Time Scaling"):
             svg_parts.append(f'<text x="{margin["left"] - 5}" y="{y + 4}" text-anchor="end" class="tick-label">{elo}</text>')
 
     # Grid lines (vertical) - use actual data times as ticks
-    time_ticks = times  # Use the actual data points
+    time_ticks = sorted(set(times + (extra_times or [])))  # All data points
     for t in time_ticks:
         if min_time <= t <= max_time:
             x = scale_x(t)
@@ -84,6 +90,21 @@ def generate_svg(times, elos, output_path, title="Search-Time Scaling"):
         svg_parts.append(f'<circle cx="{x}" cy="{y}" r="5" class="point"/>')
         svg_parts.append(f'<text x="{x}" y="{y - 10}" text-anchor="middle" class="point-label">{e}</text>')
 
+    # Extra data points (different color)
+    if extra_times and extra_elos:
+        for t, e in zip(extra_times, extra_elos):
+            x, y = scale_x(t), scale_y(e)
+            svg_parts.append(f'<circle cx="{x}" cy="{y}" r="5" class="extra-point"/>')
+            svg_parts.append(f'<text x="{x}" y="{y - 10}" text-anchor="middle" class="extra-label">{e}</text>')
+
+        # Legend
+        legend_x = width - margin["right"] - 120
+        legend_y = margin["top"] + 10
+        svg_parts.append(f'<circle cx="{legend_x}" cy="{legend_y}" r="4" class="point"/>')
+        svg_parts.append(f'<text x="{legend_x + 8}" y="{legend_y + 4}" class="legend">20 games/point</text>')
+        svg_parts.append(f'<circle cx="{legend_x}" cy="{legend_y + 15}" r="4" class="extra-point"/>')
+        svg_parts.append(f'<text x="{legend_x + 8}" y="{legend_y + 19}" class="legend">{extra_label or "5 games/point"}</text>')
+
     svg_parts.append('</svg>')
 
     # Write SVG
@@ -97,9 +118,12 @@ def main():
     parser.add_argument("--csv", required=True, help="Input CSV file (time,elo)")
     parser.add_argument("--out", required=True, help="Output SVG file")
     parser.add_argument("--title", default="Search-Time Scaling (Epoch 16 NNUE)", help="Plot title")
+    parser.add_argument("--extra-csv", help="Secondary CSV file for overlay points")
+    parser.add_argument("--extra-times", help="Comma-separated times to include from extra CSV (e.g., '3.0,5.0')")
+    parser.add_argument("--extra-label", default="5 games/point", help="Label for extra points in legend")
     args = parser.parse_args()
 
-    # Read CSV
+    # Read primary CSV
     times = []
     elos = []
     with open(args.csv, 'r') as f:
@@ -108,7 +132,22 @@ def main():
             times.append(float(row['time']))
             elos.append(float(row['elo']))
 
-    generate_svg(times, elos, args.out, args.title)
+    # Read extra CSV if provided
+    extra_times = None
+    extra_elos = None
+    if args.extra_csv and args.extra_times:
+        filter_times = set(float(t) for t in args.extra_times.split(','))
+        extra_times = []
+        extra_elos = []
+        with open(args.extra_csv, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                t = float(row['time'])
+                if t in filter_times:
+                    extra_times.append(t)
+                    extra_elos.append(float(row['elo']))
+
+    generate_svg(times, elos, args.out, args.title, extra_times, extra_elos, args.extra_label)
 
 if __name__ == "__main__":
     main()

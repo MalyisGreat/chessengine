@@ -7,48 +7,65 @@
   .line { fill: none; stroke: #2196F3; stroke-width: 2; }
   .point { fill: #2196F3; }
   .point-label { font: 9px sans-serif; fill: #333; }
+  .extra-point { fill: #FF9800; }
+  .extra-label { font: 9px sans-serif; fill: #E65100; }
+  .legend { font: 10px sans-serif; }
 </style>
 <rect width="600" height="400" fill="white"/>
 <text x="300.0" y="25" text-anchor="middle" class="title">Search-Time Scaling (Epoch 16 NNUE) - 20 games/point</text>
-<line x1="70" y1="286.30071599045345" x2="570" y2="286.30071599045345" class="grid"/>
-<text x="65" y="290.30071599045345" text-anchor="end" class="tick-label">2700</text>
-<line x1="70" y1="214.7016706443914" x2="570" y2="214.7016706443914" class="grid"/>
-<text x="65" y="218.7016706443914" text-anchor="end" class="tick-label">2800</text>
-<line x1="70" y1="143.10262529832937" x2="570" y2="143.10262529832937" class="grid"/>
-<text x="65" y="147.10262529832937" text-anchor="end" class="tick-label">2900</text>
-<line x1="70" y1="71.50357995226727" x2="570" y2="71.50357995226727" class="grid"/>
-<text x="65" y="75.50357995226727" text-anchor="end" class="tick-label">3000</text>
+<line x1="70" y1="299.7495527728086" x2="570" y2="299.7495527728086" class="grid"/>
+<text x="65" y="303.7495527728086" text-anchor="end" class="tick-label">2700</text>
+<line x1="70" y1="246.08228980322002" x2="570" y2="246.08228980322002" class="grid"/>
+<text x="65" y="250.08228980322002" text-anchor="end" class="tick-label">2800</text>
+<line x1="70" y1="192.4150268336315" x2="570" y2="192.4150268336315" class="grid"/>
+<text x="65" y="196.4150268336315" text-anchor="end" class="tick-label">2900</text>
+<line x1="70" y1="138.74776386404295" x2="570" y2="138.74776386404295" class="grid"/>
+<text x="65" y="142.74776386404295" text-anchor="end" class="tick-label">3000</text>
+<line x1="70" y1="85.08050089445439" x2="570" y2="85.08050089445439" class="grid"/>
+<text x="65" y="89.08050089445439" text-anchor="end" class="tick-label">3100</text>
 <line x1="70.0" y1="40" x2="70.0" y2="340" class="grid"/>
 <text x="70.0" y="355" text-anchor="middle" class="tick-label">0.05s</text>
-<line x1="163.9509123545538" y1="40" x2="163.9509123545538" y2="340" class="grid"/>
-<text x="163.9509123545538" y="355" text-anchor="middle" class="tick-label">0.1s</text>
-<line x1="257.9018247091076" y1="40" x2="257.9018247091076" y2="340" class="grid"/>
-<text x="257.9018247091076" y="355" text-anchor="middle" class="tick-label">0.2s</text>
-<line x1="351.8527370636614" y1="40" x2="351.8527370636614" y2="340" class="grid"/>
-<text x="351.8527370636614" y="355" text-anchor="middle" class="tick-label">0.4s</text>
-<line x1="445.8036494182152" y1="40" x2="445.8036494182152" y2="340" class="grid"/>
-<text x="445.8036494182152" y="355" text-anchor="middle" class="tick-label">0.8s</text>
-<line x1="531.0068482814002" y1="40" x2="531.0068482814002" y2="340" class="grid"/>
-<text x="531.0068482814002" y="355" text-anchor="middle" class="tick-label">1.5s</text>
+<line x1="145.2574989159953" y1="40" x2="145.2574989159953" y2="340" class="grid"/>
+<text x="145.2574989159953" y="355" text-anchor="middle" class="tick-label">0.1s</text>
+<line x1="220.51499783199063" y1="40" x2="220.51499783199063" y2="340" class="grid"/>
+<text x="220.51499783199063" y="355" text-anchor="middle" class="tick-label">0.2s</text>
+<line x1="295.7724967479859" y1="40" x2="295.7724967479859" y2="340" class="grid"/>
+<text x="295.7724967479859" y="355" text-anchor="middle" class="tick-label">0.4s</text>
+<line x1="371.0299956639812" y1="40" x2="371.0299956639812" y2="340" class="grid"/>
+<text x="371.0299956639812" y="355" text-anchor="middle" class="tick-label">0.8s</text>
+<line x1="439.28031367991565" y1="40" x2="439.28031367991565" y2="340" class="grid"/>
+<text x="439.28031367991565" y="355" text-anchor="middle" class="tick-label">1.5s</text>
+<line x1="470.5149978319906" y1="40" x2="470.5149978319906" y2="340" class="grid"/>
+<text x="470.5149978319906" y="355" text-anchor="middle" class="tick-label">2.0s</text>
+<line x1="514.537812595911" y1="40" x2="514.537812595911" y2="340" class="grid"/>
+<text x="514.537812595911" y="355" text-anchor="middle" class="tick-label">3.0s</text>
 <line x1="570.0" y1="40" x2="570.0" y2="340" class="grid"/>
-<text x="570.0" y="355" text-anchor="middle" class="tick-label">2.0s</text>
+<text x="570.0" y="355" text-anchor="middle" class="tick-label">5.0s</text>
 <line x1="70" y1="340" x2="570" y2="340" stroke="black" stroke-width="1"/>
 <line x1="70" y1="40" x2="70" y2="340" stroke="black" stroke-width="1"/>
 <text x="300.0" y="385" text-anchor="middle" class="axis-label">Search Time (seconds, log scale)</text>
 <text x="15" y="200.0" text-anchor="middle" transform="rotate(-90, 15, 200.0)" class="axis-label">Estimated Elo</text>
-<path d="M 70.0,304.2 L 164.0,211.1 L 257.9,166.7 L 351.9,160.3 L 445.8,130.9 L 531.0,75.8 L 570.0,101.6" class="line"/>
-<circle cx="70.0" cy="304.200477326969" r="5" class="point"/>
-<text x="70.0" y="294.200477326969" text-anchor="middle" class="point-label">2675.0</text>
-<circle cx="163.9509123545538" cy="211.1217183770883" r="5" class="point"/>
-<text x="163.9509123545538" y="201.1217183770883" text-anchor="middle" class="point-label">2805.0</text>
-<circle cx="257.9018247091076" cy="166.73031026252983" r="5" class="point"/>
-<text x="257.9018247091076" y="156.73031026252983" text-anchor="middle" class="point-label">2867.0</text>
-<circle cx="351.8527370636614" cy="160.28639618138425" r="5" class="point"/>
-<text x="351.8527370636614" y="150.28639618138425" text-anchor="middle" class="point-label">2876.0</text>
-<circle cx="445.8036494182152" cy="130.9307875894988" r="5" class="point"/>
-<text x="445.8036494182152" y="120.9307875894988" text-anchor="middle" class="point-label">2917.0</text>
-<circle cx="531.0068482814002" cy="75.79952267303105" r="5" class="point"/>
-<text x="531.0068482814002" y="65.79952267303105" text-anchor="middle" class="point-label">2994.0</text>
-<circle cx="570.0" cy="101.57517899761336" r="5" class="point"/>
-<text x="570.0" y="91.57517899761336" text-anchor="middle" class="point-label">2958.0</text>
+<path d="M 70.0,313.2 L 145.3,243.4 L 220.5,210.1 L 295.8,205.3 L 371.0,183.3 L 439.3,142.0 L 470.5,161.3" class="line"/>
+<circle cx="70.0" cy="313.1663685152057" r="5" class="point"/>
+<text x="70.0" y="303.1663685152057" text-anchor="middle" class="point-label">2675.0</text>
+<circle cx="145.2574989159953" cy="243.3989266547406" r="5" class="point"/>
+<text x="145.2574989159953" y="233.3989266547406" text-anchor="middle" class="point-label">2805.0</text>
+<circle cx="220.51499783199063" cy="210.1252236135957" r="5" class="point"/>
+<text x="220.51499783199063" y="200.1252236135957" text-anchor="middle" class="point-label">2867.0</text>
+<circle cx="295.7724967479859" cy="205.29516994633275" r="5" class="point"/>
+<text x="295.7724967479859" y="195.29516994633275" text-anchor="middle" class="point-label">2876.0</text>
+<circle cx="371.0299956639812" cy="183.29159212880143" r="5" class="point"/>
+<text x="371.0299956639812" y="173.29159212880143" text-anchor="middle" class="point-label">2917.0</text>
+<circle cx="439.28031367991565" cy="141.96779964221824" r="5" class="point"/>
+<text x="439.28031367991565" y="131.96779964221824" text-anchor="middle" class="point-label">2994.0</text>
+<circle cx="470.5149978319906" cy="161.28801431127013" r="5" class="point"/>
+<text x="470.5149978319906" y="151.28801431127013" text-anchor="middle" class="point-label">2958.0</text>
+<circle cx="514.537812595911" cy="195.6350626118068" r="5" class="extra-point"/>
+<text x="514.537812595911" y="185.6350626118068" text-anchor="middle" class="extra-label">2894.0</text>
+<circle cx="570.0" cy="66.8336314847943" r="5" class="extra-point"/>
+<text x="570.0" y="56.833631484794296" text-anchor="middle" class="extra-label">3134.0</text>
+<circle cx="450" cy="50" r="4" class="point"/>
+<text x="458" y="54" class="legend">20 games/point</text>
+<circle cx="450" cy="65" r="4" class="extra-point"/>
+<text x="458" y="69" class="legend">5 games/point</text>
 </svg>
