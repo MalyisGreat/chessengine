@@ -1,13 +1,25 @@
 #!/usr/bin/env python3
 """
-Cloud Fine-Tuning Script for Epoch 16 NNUE on Lc0 Data
+[EXPERIMENTAL] Train NNUE from scratch on Lc0 evaluation data.
 
-This is a standalone script for cloud environments (RunPod, etc.)
-It handles: downloading data, converting model, and running fine-tuning.
+This is a SEPARATE training pipeline that does NOT affect the main
+speed_demon training. It uses:
+  - Different data: Lc0 test80 rescored positions (~8GB)
+  - Different output: outputs/finetune_lc0/
+  - Same architecture: HalfKAv2_hm (2560/15/32) for Stockfish 16.1
+
+The goal is to train on higher-quality Lc0 evaluations which may
+produce better positional understanding than self-play data.
 
 Usage:
-    python scripts/cloud_finetune_lc0.py
-    python scripts/cloud_finetune_lc0.py --epochs 15 --batch-size 32768
+    # Train from scratch on Lc0 data
+    python scripts/cloud_finetune_lc0.py --force-fresh --epochs 15
+
+    # With custom batch size for large GPU
+    python scripts/cloud_finetune_lc0.py --force-fresh --epochs 15 --batch-size 32768
+
+    # Resume from a checkpoint
+    python scripts/cloud_finetune_lc0.py --checkpoint path/to/model.ckpt --epochs 10
 """
 
 import argparse
@@ -53,7 +65,7 @@ def run_command(cmd, cwd=None, check=True):
 
 
 def ensure_nnue_pytorch():
-    """Ensure nnue-pytorch is cloned."""
+    """Ensure nnue-pytorch is cloned and patched."""
     if not NNUE_PYTORCH_DIR.exists():
         print("\nnnue-pytorch not found. Cloning...")
         run_command([
@@ -61,6 +73,16 @@ def ensure_nnue_pytorch():
             "https://github.com/official-stockfish/nnue-pytorch.git",
             str(NNUE_PYTORCH_DIR)
         ])
+
+    # Apply L2/L3 patches if patch script exists
+    patch_script = PROJECT_ROOT / "speed_demon" / "patch_nnue_pytorch.py"
+    if patch_script.exists() and NNUE_PYTORCH_DIR.exists():
+        print("\nPatching nnue-pytorch for L2/L3 support...")
+        run_command([
+            sys.executable, str(patch_script),
+            "--repo", str(NNUE_PYTORCH_DIR)
+        ], check=False)
+
     return NNUE_PYTORCH_DIR.exists()
 
 
@@ -166,16 +188,18 @@ def find_best_checkpoint(output_dir):
     return max(ckpts, key=lambda p: p.stat().st_mtime)
 
 
-def run_training(data_path, resume_model, output_dir, args):
-    """Run the fine-tuning."""
+def run_training(data_path, resume_model, output_dir, args, from_scratch=False):
+    """Run the training (fine-tuning or from scratch)."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    mode = "FRESH TRAINING" if from_scratch else "FINE-TUNING"
     print(f"\n{'='*60}")
-    print("FINE-TUNING CONFIGURATION")
+    print(f"{mode} CONFIGURATION")
     print(f"{'='*60}")
     print(f"Training data:    {data_path} ({data_path.stat().st_size / 1e9:.2f} GB)")
-    print(f"Resume from:      {resume_model}")
+    if not from_scratch:
+        print(f"Resume from:      {resume_model}")
     print(f"Output dir:       {output_dir}")
     print(f"Epochs:           {args.epochs}")
     print(f"Learning rate:    {args.lr}")
@@ -189,7 +213,6 @@ def run_training(data_path, resume_model, output_dir, args):
         sys.executable, "train.py",
         str(data_path),
         "--default_root_dir", str(output_dir),
-        "--resume-from-model", str(resume_model),
         "--features", FEATURES,
         "--l1", str(L1),
         "--l2", str(L2),
@@ -199,11 +222,15 @@ def run_training(data_path, resume_model, output_dir, args):
         "--batch-size", str(args.batch_size),
         "--num-workers", str(args.num_workers),
         "--lr", str(args.lr),
-        "--gamma", "0.995",  # Slower LR decay for fine-tuning
+        "--gamma", "0.995",  # Slower LR decay
         "--network-save-period", "1",
         "--save-last-network", "True",
         "--validation-size", str(min(1_000_000, args.epoch_size // 10)),
     ]
+
+    # Add resume model only if not training from scratch
+    if not from_scratch and resume_model:
+        cmd.extend(["--resume-from-model", str(resume_model)])
 
     # Add threads if specified
     if args.threads:
@@ -235,6 +262,12 @@ def main():
                         help="Data loader workers (default: 4)")
     parser.add_argument("--threads", type=int, default=None,
                         help="Number of threads")
+
+    # Resume options
+    parser.add_argument("--checkpoint", type=Path, default=None,
+                        help="Path to .ckpt or .pt file to resume from")
+    parser.add_argument("--force-fresh", action="store_true",
+                        help="Train from scratch if NNUE conversion fails")
 
     # Output options
     parser.add_argument("--output", type=Path, default=OUTPUT_DIR,
@@ -291,7 +324,7 @@ def main():
         sys.exit(1)
 
     # ========================================================================
-    # STEP 2: Convert NNUE to PyTorch format
+    # STEP 2: Convert NNUE to PyTorch format (or use checkpoint)
     # ========================================================================
 
     print("\n" + "="*60)
@@ -299,27 +332,52 @@ def main():
     print("="*60)
 
     pt_path = args.output / "epoch16_resume.pt"
+    train_from_scratch = False
 
-    if pt_path.exists():
+    # Check if user provided a checkpoint file directly
+    if args.checkpoint:
+        if args.checkpoint.exists():
+            pt_path = args.checkpoint
+            print(f"Using provided checkpoint: {pt_path}")
+        else:
+            print(f"ERROR: Checkpoint not found: {args.checkpoint}")
+            sys.exit(1)
+    elif pt_path.exists():
         print(f"PyTorch model already exists: {pt_path}")
     else:
-        if not SOURCE_NNUE.exists():
-            print(f"ERROR: Source NNUE not found: {SOURCE_NNUE}")
-            sys.exit(1)
-
-        if not convert_nnue_to_pt(SOURCE_NNUE, pt_path):
-            print("ERROR: Conversion failed!")
-            sys.exit(1)
+        if SOURCE_NNUE.exists():
+            print(f"Attempting to convert: {SOURCE_NNUE}")
+            if not convert_nnue_to_pt(SOURCE_NNUE, pt_path):
+                print("\nWARNING: NNUE conversion failed (format incompatible)")
+                print("The NNUE file was created with a different nnue-pytorch version.")
+                if args.force_fresh:
+                    print("--force-fresh specified, training from scratch...")
+                    train_from_scratch = True
+                else:
+                    print("\nOptions:")
+                    print("  1. Provide a checkpoint file with --checkpoint path/to/file.ckpt")
+                    print("  2. Use --force-fresh to train from scratch on Lc0 data")
+                    print("  3. Copy checkpoints from your training run")
+                    sys.exit(1)
+        else:
+            print(f"Source NNUE not found: {SOURCE_NNUE}")
+            if args.force_fresh:
+                print("--force-fresh specified, training from scratch...")
+                train_from_scratch = True
+            else:
+                print("Use --force-fresh to train from scratch on Lc0 data")
+                sys.exit(1)
 
     # ========================================================================
-    # STEP 3: Run Fine-Tuning
+    # STEP 3: Run Training
     # ========================================================================
 
     print("\n" + "="*60)
-    print("STEP 3: Fine-Tuning")
+    print("STEP 3: Training")
     print("="*60)
 
-    if not run_training(data_path, pt_path, args.output, args):
+    resume_model = None if train_from_scratch else pt_path
+    if not run_training(data_path, resume_model, args.output, args, from_scratch=train_from_scratch):
         print("\nWARNING: Training may have encountered issues")
 
     # ========================================================================
