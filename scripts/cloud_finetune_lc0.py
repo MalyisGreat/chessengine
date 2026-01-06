@@ -64,6 +64,21 @@ def run_command(cmd, cwd=None, check=True):
     return result.returncode == 0
 
 
+def ensure_python_deps():
+    """Install required Python dependencies if missing."""
+    try:
+        import lightning
+        return True
+    except ImportError:
+        pass
+
+    print("\nInstalling Python dependencies (pytorch-lightning, etc.)...")
+    deps = ["lightning", "ranger21", "psutil", "python-chess"]
+    cmd = [sys.executable, "-m", "pip", "install", "-q"] + deps
+    result = subprocess.run(cmd, check=False)
+    return result.returncode == 0
+
+
 def ensure_nnue_pytorch():
     """Ensure nnue-pytorch is cloned and patched."""
     if not NNUE_PYTORCH_DIR.exists():
@@ -364,6 +379,10 @@ def main():
     print("NNUE FINE-TUNING ON LC0 DATA")
     print("="*60)
     print(f"Project root: {PROJECT_ROOT}")
+
+    # Install Python dependencies if missing
+    if not ensure_python_deps():
+        print("WARNING: Could not install Python dependencies")
 
     # Ensure nnue-pytorch is available
     if not ensure_nnue_pytorch():
