@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">
 <rect width="100%" height="100%" fill="#0b0f14"/>
-<text x="480.0" y="28" fill="#e8edf2" font-size="18" font-family="Arial" text-anchor="middle">Search-Time Scaling (Epoch 16 NNUE)</text>
+<text x="480.0" y="28" fill="#e8edf2" font-size="18" font-family="Arial" text-anchor="middle">Search-Time Scaling</text>
 <text x="480.0" y="524" fill="#c7d1db" font-size="12" font-family="Arial" text-anchor="middle">Time per move (seconds)</text>
 <text x="16" y="270.0" fill="#c7d1db" font-size="12" font-family="Arial" text-anchor="middle" transform="rotate(-90 16,270.0)">Estimated Elo</text>
 <rect x="70" y="50" width="860" height="430" fill="#111722" stroke="#2a3542" stroke-width="1"/>

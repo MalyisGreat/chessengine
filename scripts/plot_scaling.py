@@ -158,7 +158,7 @@ def main():
     parser = argparse.ArgumentParser(description="Plot scaling results from CSV")
     parser.add_argument("--csv", required=True, help="Input CSV file (time,elo)")
     parser.add_argument("--out", required=True, help="Output SVG file")
-    parser.add_argument("--title", default="Search-Time Scaling (Epoch 16 NNUE)", help="Plot title")
+    parser.add_argument("--title", default="Search-Time Scaling", help="Plot title")
     parser.add_argument("--extra-csv", help="Secondary CSV file for overlay points")
     parser.add_argument("--extra-times", help="Comma-separated times to include from extra CSV (e.g., '3.0,5.0')")
     parser.add_argument("--extra-label", default="5 games/point", help="Label for extra points in legend")
